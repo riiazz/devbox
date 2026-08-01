@@ -9,5 +9,6 @@ path = "src/main.rs"
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
+config = { path = "../config" }
 runtime = { path = "../runtime" }
 workspace = { path = "../workspace" }

@@ -1,5 +1,8 @@
 use clap::{Parser, Subcommand};
+use std::path::PathBuf;
 use std::process::ExitCode;
+
+use config::Config;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -40,7 +43,18 @@ fn main() -> ExitCode {
 }
 
 fn exec(args: &ExecArgs) -> ExitCode {
-    let runtime = runtime::Runtime::new();
+    let mut runtime = runtime::Runtime::new();
+
+    if let Some(config_path) = find_config() {
+        match Config::load(&config_path) {
+            Ok(config) => apply_environment(&mut runtime, &config),
+            Err(err) => {
+                eprintln!("devbox: {err}");
+                return ExitCode::FAILURE;
+            }
+        }
+    }
+
     match runtime.exec(&args.program, &args.args) {
         Ok(status) => match status.code() {
             Some(code) => ExitCode::from(code as u8),
@@ -53,10 +67,38 @@ fn exec(args: &ExecArgs) -> ExitCode {
     }
 }
 
+fn apply_environment(runtime: &mut runtime::Runtime, config: &Config) {
+    let env = runtime.environment_mut();
+    for (key, value) in &config.environment {
+        env.set(key, value);
+    }
+}
+
+fn find_config() -> Option<PathBuf> {
+    let root = workspace::Workspace::discover().ok()?.root().to_path_buf();
+    let path = root.join(config::FILE_NAME);
+    path.is_file().then_some(path)
+}
+
 fn init() -> ExitCode {
     let cwd = std::env::current_dir().expect("determine current directory");
     match workspace::Workspace::init(&cwd) {
         Ok(ws) => {
+            let name = cwd
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "devbox".to_string());
+            let config = Config {
+                workspace: config::Workspace {
+                    name: name.clone(),
+                },
+                environment: Default::default(),
+            };
+            let path = ws.root().join(config::FILE_NAME);
+            if let Err(err) = config.save(&path) {
+                eprintln!("devbox: {err}");
+                return ExitCode::FAILURE;
+            }
             println!("Initialized devbox workspace at {}", ws.root().display());
             ExitCode::SUCCESS
         }

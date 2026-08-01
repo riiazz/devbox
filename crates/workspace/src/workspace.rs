@@ -17,6 +17,11 @@ pub enum WorkspaceError {
     },
     #[error("`{0}` is not a devbox workspace (run `devbox init`)")]
     NotInitialized(PathBuf),
+    #[error("failed to access current directory: {source}")]
+    CurrentDir {
+        #[source]
+        source: std::io::Error,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -43,6 +48,18 @@ impl Workspace {
             return Err(WorkspaceError::NotInitialized(root));
         }
         Ok(Self { root })
+    }
+
+    pub fn discover() -> Result<Self, WorkspaceError> {
+        let cwd = std::env::current_dir().map_err(|source| WorkspaceError::CurrentDir {
+            source,
+        })?;
+        for dir in cwd.ancestors() {
+            if let Ok(ws) = Self::open(dir) {
+                return Ok(ws);
+            }
+        }
+        Err(WorkspaceError::NotInitialized(cwd))
     }
 
     pub fn root(&self) -> &Path {
@@ -117,6 +134,20 @@ mod tests {
             Workspace::open(&root),
             Err(WorkspaceError::NotInitialized(_))
         ));
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn discover_finds_workspace_from_subdir() {
+        let root = temp_dir();
+        Workspace::init(&root).expect("init workspace");
+        let sub = root.join("src").join("sub");
+        fs::create_dir_all(&sub).expect("create subdir");
+
+        std::env::set_current_dir(&sub).expect("set cwd");
+        let ws = Workspace::discover().expect("discover workspace");
+        assert_eq!(ws.root(), root);
+
         fs::remove_dir_all(&root).ok();
     }
 
