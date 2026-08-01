@@ -16,6 +16,9 @@ struct Cli {
 enum Commands {
     /// Run a program inside the DevBox environment
     Exec(ExecArgs),
+
+    /// Create the .devbox workspace
+    Init,
 }
 
 #[derive(Debug, clap::Args)]
@@ -32,6 +35,7 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     match cli.command {
         Commands::Exec(args) => exec(&args),
+        Commands::Init => init(),
     }
 }
 
@@ -42,6 +46,20 @@ fn exec(args: &ExecArgs) -> ExitCode {
             Some(code) => ExitCode::from(code as u8),
             None => ExitCode::FAILURE,
         },
+        Err(err) => {
+            eprintln!("devbox: {err}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn init() -> ExitCode {
+    let cwd = std::env::current_dir().expect("determine current directory");
+    match workspace::Workspace::init(&cwd) {
+        Ok(ws) => {
+            println!("Initialized devbox workspace at {}", ws.root().display());
+            ExitCode::SUCCESS
+        }
         Err(err) => {
             eprintln!("devbox: {err}");
             ExitCode::FAILURE

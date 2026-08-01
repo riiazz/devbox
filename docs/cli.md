@@ -1,19 +1,20 @@
 # CLI
 
-Version 0.1 implements a single command.
+## Commands
 
-## Usage
-
-    devbox exec <program> [args...]
+### `devbox exec <program> [args...]`
 
 Runs `<program>` inside the DevBox environment.
 
-## Examples
+Examples:
 
     devbox exec dotnet --info
 
     devbox exec cargo build
 
-## Exit codes
+Exits with the exit code of the spawned program.
 
-`devbox exec` exits with the exit code of the spawned program.
+### `devbox init`
+
+Creates the `.devbox/` workspace directory tree in the current directory.
+Idempotent. See [workspace.md](workspace.md).
