@@ -279,6 +279,10 @@ fn tools_register(path: &Path, args: &RegisterArgs) -> ExitCode {
 }
 
 fn exec(args: &ExecArgs) -> ExitCode {
+    if let Err(err) = ignore_interrupts() {
+        eprintln!("devbox: failed to install Ctrl+C handler: {err}");
+        return ExitCode::FAILURE;
+    }
     let mut runtime = runtime::Runtime::new();
     if let Some(code) = prepare_runtime(&mut runtime) {
         return code;
@@ -296,6 +300,10 @@ fn exec(args: &ExecArgs) -> ExitCode {
 }
 
 fn shell() -> ExitCode {
+    if let Err(err) = ignore_interrupts() {
+        eprintln!("devbox: failed to install Ctrl+C handler: {err}");
+        return ExitCode::FAILURE;
+    }
     let mut runtime = runtime::Runtime::new();
     if let Some(code) = prepare_runtime(&mut runtime) {
         return code;
@@ -317,6 +325,18 @@ fn shell() -> ExitCode {
     };
     println!("devbox: shell exited");
     code
+}
+
+/// Keeps devbox alive when the user presses Ctrl+C inside a foreground child
+/// (the interactive shell or an exec'd program). On both Windows and Unix the
+/// interrupt is delivered to every process attached to the console/terminal,
+/// not just the focused child. Without a handler devbox would terminate while
+/// its child keeps running, orphaning the child shell and leaving two shells
+/// competing for the same terminal input (the "bouncing prompt" bug). The
+/// handler does nothing — its presence is what prevents the default
+/// termination, and Ctrl+C still reaches the child untouched.
+fn ignore_interrupts() -> Result<(), ctrlc::Error> {
+    ctrlc::set_handler(|| {})
 }
 
 /// The interactive shell to spawn: `$SHELL` if set, otherwise PowerShell on
