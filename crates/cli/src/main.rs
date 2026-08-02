@@ -575,6 +575,11 @@ fn init() -> ExitCode {
                 tools: Default::default(),
             };
             let path = ws.root().join(config::FILE_NAME);
+            if path.is_file() {
+                println!("Initialized devbox workspace at {}", ws.root().display());
+                println!("devbox: {} already exists, leaving it untouched", path.display());
+                return ExitCode::SUCCESS;
+            }
             if let Err(err) = config.save(&path) {
                 eprintln!("devbox: {err}");
                 return ExitCode::FAILURE;

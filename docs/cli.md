@@ -44,7 +44,8 @@ Pipeline:
 ### `devbox init`
 
 Creates the `.devbox/` workspace directory tree and a starter `devbox.toml`
-in the current directory. Idempotent. See [workspace.md](workspace.md) and
+in the current directory. Idempotent: a second run is a no-op and leaves an
+existing `devbox.toml` untouched. See [workspace.md](workspace.md) and
 [config.md](config.md).
 
 ### `devbox install <name> [--version <version>]`
