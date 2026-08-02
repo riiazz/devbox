@@ -23,6 +23,15 @@ tree owned by DevBox. No downloads yet — only structure.
 Creates the `.devbox/` directory tree in the current directory. Idempotent:
 running it again is a no-op.
 
+## Discovery
+
+Commands that need a workspace locate it by walking up from the current
+directory: the first ancestor containing a `.devbox/` directory wins. If no
+such directory is found, DevBox falls back to a workspace created in the
+directory that holds the `devbox` binary itself. This makes a global
+environment usable from anywhere: `devbox init` next to the binary once, and
+every command finds it no matter the current directory.
+
 ## Paths
 
 | Directory  | Purpose                            |

@@ -4,7 +4,7 @@ DevBox is a reproducible development environment tool written in Rust.
 
 ## Status
 
-Version 0.9
+Version 1.0.0 — stable.
 
 - CLI parser
 - Runtime
@@ -18,6 +18,10 @@ Version 0.9
 - Shell (`devbox shell`, interactive PowerShell/bash inside the environment)
 - Environment Isolation (`HOME`, `TMP`, `NUGET_PACKAGES`, `DOTNET_ROOT` point into `.devbox`)
 - Process Supervisor (`devbox up`, `status`, `logs`, `stop` for `[services]`)
+- `devbox install` resolves tools through the `[tools]` config section
+- Idempotent `devbox init`
+
+See [release/v1.0.0.md](release/v1.0.0.md) and [CHANGELOG.md](../CHANGELOG.md).
 
 ## Documents
 

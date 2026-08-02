@@ -54,12 +54,26 @@ impl Workspace {
         let cwd = std::env::current_dir().map_err(|source| WorkspaceError::CurrentDir {
             source,
         })?;
+        let fallback = std::env::current_exe().ok();
+        let fallback = fallback.as_deref().and_then(std::path::Path::parent);
+        Self::discover_from(&cwd, fallback)
+    }
+
+    /// Walks `cwd` upward looking for a `.devbox` workspace, then falls back to
+    /// a workspace next to the devbox binary so a global environment is usable
+    /// from any directory.
+    fn discover_from(cwd: &Path, fallback: Option<&Path>) -> Result<Self, WorkspaceError> {
         for dir in cwd.ancestors() {
             if let Ok(ws) = Self::open(dir) {
                 return Ok(ws);
             }
         }
-        Err(WorkspaceError::NotInitialized(cwd))
+        if let Some(fallback) = fallback
+            && let Ok(ws) = Self::open(fallback)
+        {
+            return Ok(ws);
+        }
+        Err(WorkspaceError::NotInitialized(cwd.to_path_buf()))
     }
 
     pub fn root(&self) -> &Path {
@@ -149,6 +163,34 @@ mod tests {
         assert_eq!(ws.root(), root);
 
         fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn discover_falls_back_to_binary_dir() {
+        let root = temp_dir();
+        Workspace::init(&root).expect("init workspace");
+        let other = temp_dir();
+        std::env::set_current_dir(&other).expect("set cwd");
+
+        let ws = Workspace::discover_from(&other, Some(root.as_path()))
+            .expect("fallback workspace");
+        assert_eq!(ws.root(), root);
+
+        fs::remove_dir_all(&root).ok();
+        fs::remove_dir_all(&other).ok();
+    }
+
+    #[test]
+    fn discover_fallback_requires_initialized_dir() {
+        let root = temp_dir();
+        let other = temp_dir();
+        std::env::set_current_dir(&other).expect("set cwd");
+
+        let err = Workspace::discover_from(&other, Some(root.as_path())).unwrap_err();
+        assert!(matches!(err, WorkspaceError::NotInitialized(_)));
+
+        fs::remove_dir_all(&root).ok();
+        fs::remove_dir_all(&other).ok();
     }
 
     #[test]
