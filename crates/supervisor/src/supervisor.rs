@@ -225,14 +225,28 @@ impl Supervisor {
             .collect())
     }
 
-    /// Log files for the named service (or every service when `name` is None).
+    /// Log files on disk for the named service (or every service when `name` is
+    /// None). The log directory is scanned directly rather than consulting the
+    /// supervisor state, so logs stay discoverable after `devbox stop` clears
+    /// the state file. A missing log directory is treated as "no logs".
     pub fn log_files(&self, name: Option<&str>) -> Result<Vec<(String, PathBuf)>, SupervisorError> {
-        let processes = self.state.load()?;
-        Ok(processes
-            .iter()
-            .filter(|p| name.is_none_or(|name| name == p.name))
-            .map(|p| (p.name.clone(), p.log_file.clone()))
-            .collect())
+        let entries = match fs::read_dir(&self.log_dir) {
+            Ok(entries) => entries,
+            Err(_) => return Ok(Vec::new()),
+        };
+        let mut files: Vec<(String, PathBuf)> = entries
+            .filter_map(|entry| entry.ok())
+            .filter_map(|entry| {
+                let file = entry.file_name().to_string_lossy().into_owned();
+                let service = file.strip_suffix(".log")?;
+                if name.is_some_and(|name| name != service) {
+                    return None;
+                }
+                Some((service.to_string(), entry.path()))
+            })
+            .collect();
+        files.sort_by(|a, b| a.0.cmp(&b.0));
+        Ok(files)
     }
 }
 
@@ -460,6 +474,47 @@ mod tests {
         fs::write(&path, "a\nb\nc\nd\ne\n").expect("write log");
         assert_eq!(tail_file(&path, 2).expect("tail"), "d\ne");
         assert_eq!(tail_file(&path, 10).expect("tail"), "a\nb\nc\nd\ne");
+        fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn log_files_work_after_stop() {
+        let base = temp_dir();
+        let sup = Supervisor::new(base.join("state.toml"), base.join("logs"), &base);
+        let env = Environment::from_current();
+        sup.spawn_all(&BTreeMap::from([quick_service()]), &env)
+            .expect("spawn");
+        sup.stop(None).expect("stop");
+
+        let files = sup.log_files(None).expect("log files");
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].0, "echoer");
+        assert!(files[0].1.is_file());
+
+        fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn log_files_scan_disk_and_filter_by_name() {
+        let base = temp_dir();
+        let sup = Supervisor::new(base.join("state.toml"), base.join("logs"), &base);
+        fs::create_dir_all(&sup.log_dir).expect("create logs dir");
+        fs::write(sup.log_dir.join("api.log"), "hello\n").expect("write log");
+        fs::write(sup.log_dir.join("redis.log"), "world\n").expect("write log");
+
+        let files = sup.log_files(None).expect("log files");
+        assert_eq!(
+            files,
+            vec![
+                ("api".to_string(), sup.log_dir.join("api.log")),
+                ("redis".to_string(), sup.log_dir.join("redis.log")),
+            ]
+        );
+        let only_api = sup.log_files(Some("api")).expect("log files");
+        assert_eq!(only_api.len(), 1);
+        assert_eq!(only_api[0].0, "api");
+        assert!(sup.log_files(Some("nope")).expect("log files").is_empty());
+
         fs::remove_dir_all(&base).ok();
     }
 }
