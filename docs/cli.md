@@ -19,6 +19,25 @@ Examples:
 
 Exits with the exit code of the spawned program.
 
+### `devbox shell`
+
+Opens an interactive shell inside the DevBox environment. Applies the same
+environment as `devbox exec` — `[environment]` from `devbox.toml` plus the
+installed tools on `PATH` — then spawns the user's shell (`$SHELL`, falling
+back to PowerShell on Windows and `bash` on Unix), waits for it to finish, and
+propagates its exit code. No system environment variables are modified; the
+environment lives only in the child process.
+
+Pipeline:
+
+    Create ENV
+        ↓
+    Spawn shell
+        ↓
+    Wait
+        ↓
+    Cleanup (nothing persists)
+
 ### `devbox init`
 
 Creates the `.devbox/` workspace directory tree and a starter `devbox.toml`

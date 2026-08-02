@@ -28,6 +28,9 @@ enum Commands {
     /// Download and register a tool
     Install(InstallArgs),
 
+    /// Open an interactive shell inside the DevBox environment
+    Shell,
+
     /// Manage the tool registry
     Tools(ToolsArgs),
 }
@@ -90,6 +93,7 @@ fn main() -> ExitCode {
         Commands::Exec(args) => exec(&args),
         Commands::Init => init(),
         Commands::Install(args) => install(&args),
+        Commands::Shell => shell(),
         Commands::Tools(args) => tools(&args),
     }
 }
@@ -222,24 +226,9 @@ fn tools_register(path: &Path, args: &RegisterArgs) -> ExitCode {
 
 fn exec(args: &ExecArgs) -> ExitCode {
     let mut runtime = runtime::Runtime::new();
-
-    if let Some(config_path) = find_config() {
-        match Config::load(&config_path) {
-            Ok(config) => apply_environment(&mut runtime, &config),
-            Err(err) => {
-                eprintln!("devbox: {err}");
-                return ExitCode::FAILURE;
-            }
-        }
+    if let Some(code) = prepare_runtime(&mut runtime) {
+        return code;
     }
-
-    if let Some(tool_dirs) = installed_tool_dirs() {
-        let env = runtime.environment_mut();
-        for dir in tool_dirs.iter().rev() {
-            env.prepend_path(dir);
-        }
-    }
-
     match runtime.exec(&args.program, &args.args) {
         Ok(status) => match status.code() {
             Some(code) => ExitCode::from(code as u8),
@@ -250,6 +239,68 @@ fn exec(args: &ExecArgs) -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+fn shell() -> ExitCode {
+    let mut runtime = runtime::Runtime::new();
+    if let Some(code) = prepare_runtime(&mut runtime) {
+        return code;
+    }
+
+    let shell = shell_command();
+    if let Ok(ws) = workspace::Workspace::discover() {
+        println!("devbox: shell for {} ({} on PATH)", ws.root().display(), shell);
+    }
+    let code = match runtime.exec(&shell, &[]) {
+        Ok(status) => match status.code() {
+            Some(code) => ExitCode::from(code as u8),
+            None => ExitCode::FAILURE,
+        },
+        Err(err) => {
+            eprintln!("devbox: {err}");
+            ExitCode::FAILURE
+        }
+    };
+    println!("devbox: shell exited");
+    code
+}
+
+/// The interactive shell to spawn: `$SHELL` if set, otherwise PowerShell on
+/// Windows and `bash` on Unix.
+fn shell_command() -> String {
+    if let Some(shell) = std::env::var_os("SHELL")
+        .map(|s| s.to_string_lossy().into_owned())
+        .filter(|s| !s.is_empty())
+    {
+        return shell;
+    }
+    if cfg!(windows) {
+        "powershell.exe".to_string()
+    } else {
+        "bash".to_string()
+    }
+}
+
+/// Applies `[environment]` from `devbox.toml` and prepends installed tool
+/// directories to `PATH`. Returns `Some(ExitCode)` on failure.
+fn prepare_runtime(runtime: &mut runtime::Runtime) -> Option<ExitCode> {
+    if let Some(config_path) = find_config() {
+        match Config::load(&config_path) {
+            Ok(config) => apply_environment(runtime, &config),
+            Err(err) => {
+                eprintln!("devbox: {err}");
+                return Some(ExitCode::FAILURE);
+            }
+        }
+    }
+
+    if let Some(tool_dirs) = installed_tool_dirs() {
+        let env = runtime.environment_mut();
+        for dir in tool_dirs.iter().rev() {
+            env.prepend_path(dir);
+        }
+    }
+    None
 }
 
 /// Directories containing installed tool executables, highest priority first.
