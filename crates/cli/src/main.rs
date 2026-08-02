@@ -22,6 +22,41 @@ enum Commands {
 
     /// Create the .devbox workspace
     Init,
+
+    /// Manage the tool registry
+    Tools(ToolsArgs),
+}
+
+#[derive(Debug, clap::Args)]
+struct ToolsArgs {
+    #[command(subcommand)]
+    command: ToolsCommands,
+}
+
+#[derive(Debug, Subcommand)]
+enum ToolsCommands {
+    /// List registered tools
+    List,
+
+    /// Register a tool manually
+    Register(RegisterArgs),
+}
+
+#[derive(Debug, clap::Args)]
+struct RegisterArgs {
+    /// Tool name
+    name: String,
+
+    /// Tool version
+    version: String,
+
+    /// Executable name
+    #[arg(long)]
+    executable: String,
+
+    /// Installation directory (defaults to `.devbox/tools/`)
+    #[arg(long)]
+    dir: Option<PathBuf>,
 }
 
 #[derive(Debug, clap::Args)]
@@ -39,6 +74,93 @@ fn main() -> ExitCode {
     match cli.command {
         Commands::Exec(args) => exec(&args),
         Commands::Init => init(),
+        Commands::Tools(args) => tools(&args),
+    }
+}
+
+fn tools(args: &ToolsArgs) -> ExitCode {
+    let ws = match workspace::Workspace::discover() {
+        Ok(ws) => ws,
+        Err(err) => {
+            eprintln!("devbox: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let path = ws.tools_dir().join(toolchain::REGISTRY_FILE);
+    match &args.command {
+        ToolsCommands::List => tools_list(&path),
+        ToolsCommands::Register(args) => tools_register(&path, args),
+    }
+}
+
+fn tools_list(path: &std::path::Path) -> ExitCode {
+    if !path.is_file() {
+        println!("No tools registered.");
+        return ExitCode::SUCCESS;
+    }
+    match toolchain::ToolRegistry::load(path) {
+        Ok(registry) => {
+            let tools = registry.list();
+            if tools.is_empty() {
+                println!("No tools registered.");
+            } else {
+                for tool in tools {
+                    println!(
+                        "{} {} ({} at {})",
+                        tool.name,
+                        tool.version,
+                        tool.executable,
+                        tool.install_dir.display()
+                    );
+                }
+            }
+            ExitCode::SUCCESS
+        }
+        Err(err) => {
+            eprintln!("devbox: {err}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn tools_register(path: &std::path::Path, args: &RegisterArgs) -> ExitCode {
+    let mut registry = if path.is_file() {
+        match toolchain::ToolRegistry::load(path) {
+            Ok(registry) => registry,
+            Err(err) => {
+                eprintln!("devbox: {err}");
+                return ExitCode::FAILURE;
+            }
+        }
+    } else {
+        toolchain::ToolRegistry::new()
+    };
+
+    let install_dir = args
+        .dir
+        .clone()
+        .unwrap_or_else(|| path.parent().expect("registry path has parent").to_path_buf());
+    let tool = toolchain::Tool::new(
+        &args.name,
+        &args.version,
+        &args.executable,
+        &install_dir,
+    );
+    registry.register(tool);
+    match registry.save(path) {
+        Ok(()) => {
+            println!(
+                "Registered {} {} -> {}",
+                args.name,
+                args.version,
+                install_dir.display()
+            );
+            ExitCode::SUCCESS
+        }
+        Err(err) => {
+            eprintln!("devbox: {err}");
+            ExitCode::FAILURE
+        }
     }
 }
 

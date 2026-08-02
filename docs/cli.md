@@ -20,3 +20,20 @@ Exits with the exit code of the spawned program.
 Creates the `.devbox/` workspace directory tree and a starter `devbox.toml`
 in the current directory. Idempotent. See [workspace.md](workspace.md) and
 [config.md](config.md).
+
+### `devbox tools`
+
+Manages the tool registry stored at `.devbox/tools/registry.toml`. No
+downloads yet (version 0.5). See [toolchain.md](toolchain.md).
+
+#### `devbox tools list`
+
+Lists registered tools, ordered by name then version. Example:
+
+    ripgrep 14.1.0 (rg at .devbox\tools\rg\14.1.0)
+
+#### `devbox tools register <name> <version> --executable <exe> [--dir <dir>]`
+
+Registers a tool manually. Replaces a tool with the same name and version.
+`--dir` defaults to the registry directory (`.devbox/tools/`).
+Requires an initialized workspace.

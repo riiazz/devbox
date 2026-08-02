@@ -26,6 +26,6 @@ running it again is a no-op.
 |------------|------------------------------------|
 | `workspace`| project files DevBox manages       |
 | `cache`    | downloaded tool archives (v0.5+)   |
-| `tools`    | extracted tool installs (v0.5+)    |
+| `tools`    | tool installs and `registry.toml`  |
 | `tmp`      | temporary files for processes      |
 | `home`     | isolated `HOME` (v0.8)             |
