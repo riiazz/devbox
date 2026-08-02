@@ -41,6 +41,11 @@ pub enum StateError {
 pub struct Process {
     pub name: String,
     pub pid: u32,
+    /// PID of the devbox process that spawned this service. Used to verify the
+    /// PID still belongs to devbox before killing, so a reused PID is never
+    /// terminated.
+    #[serde(default)]
+    pub parent_pid: u32,
     pub log_file: PathBuf,
 }
 
@@ -130,6 +135,7 @@ mod tests {
         Process {
             name: name.into(),
             pid,
+            parent_pid: std::process::id(),
             log_file: PathBuf::from(".devbox").join("workspace").join("logs").join(format!("{name}.log")),
         }
     }

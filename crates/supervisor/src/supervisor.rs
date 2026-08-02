@@ -142,6 +142,7 @@ impl Supervisor {
             Process {
                 name: name.to_string(),
                 pid: child.id(),
+                parent_pid: std::process::id(),
                 log_file,
             },
             child,
@@ -177,9 +178,11 @@ impl Supervisor {
         Ok(())
     }
 
-    /// Stops the recorded processes, optionally limited to `names`. Stale or
-    /// already-dead processes are pruned from the state file regardless of
-    /// whether the kill signal could be delivered.
+    /// Stops the recorded processes, optionally limited to `names`. Only PIDs
+    /// still confirmed to be children of the devbox process that spawned them
+    /// are killed, so a PID that was reused by another program is left alone.
+    /// Stale or already-dead processes are pruned from the state file
+    /// regardless of whether the kill signal could be delivered.
     pub fn stop(&self, names: Option<&[String]>) -> Result<Vec<String>, SupervisorError> {
         let processes = self.state.load()?;
         let selected: Vec<&Process> = processes
@@ -187,11 +190,14 @@ impl Supervisor {
             .filter(|p| names.is_none_or(|names| names.contains(&p.name)))
             .collect();
 
+        let mut killed: Vec<String> = Vec::new();
         for process in &selected {
-            let _ = kill_pid(process.pid);
+            if is_ours(process) {
+                let _ = kill_pid(process.pid);
+                killed.push(process.name.clone());
+            }
         }
 
-        let killed: Vec<String> = selected.iter().map(|p| p.name.clone()).collect();
         let remaining: Vec<Process> = processes
             .iter()
             .filter(|p| !selected.contains(p))
@@ -228,6 +234,13 @@ impl Supervisor {
             .map(|p| (p.name.clone(), p.log_file.clone()))
             .collect())
     }
+}
+
+/// True when the recorded process is still a live child of the devbox process
+/// that spawned it. This guards against terminating a PID that has since been
+/// reused by an unrelated program.
+fn is_ours(process: &Process) -> bool {
+    process.parent_pid != 0 && pid_parent(process.pid) == Some(process.parent_pid)
 }
 
 /// Returns the last `lines` lines of a file as a string.
@@ -268,6 +281,27 @@ fn kill_pid(pid: u32) -> Result<(), io::Error> {
 #[cfg(unix)]
 fn kill_pid(pid: u32) -> Result<(), io::Error> {
     Command::new("kill").arg(pid.to_string()).status().map(|_| ())
+}
+
+#[cfg(windows)]
+fn pid_parent(pid: u32) -> Option<u32> {
+    let script = format!(
+        "(Get-CimInstance Win32_Process -Filter ('ProcessId = {pid}')).ParentProcessId"
+    );
+    let out = Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+        .output()
+        .ok()?;
+    String::from_utf8_lossy(&out.stdout).trim().parse().ok()
+}
+
+#[cfg(unix)]
+fn pid_parent(pid: u32) -> Option<u32> {
+    let out = Command::new("ps")
+        .args(["-o", "ppid=", "-p", &pid.to_string()])
+        .output()
+        .ok()?;
+    String::from_utf8_lossy(&out.stdout).trim().parse().ok()
 }
 
 #[cfg(test)]
@@ -383,6 +417,25 @@ mod tests {
         assert_eq!(killed, vec!["sleeper"]);
         assert!(sup.status().expect("status").is_empty());
         assert!(!pid_alive(process.pid));
+
+        fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn stop_skips_pids_that_are_not_children() {
+        let base = temp_dir();
+        let sup = Supervisor::new(base.join("state.toml"), base.join("logs"), &base);
+        let foreign = Process {
+            name: "foreign".into(),
+            pid: std::process::id(),
+            parent_pid: u32::MAX,
+            log_file: base.join("logs").join("foreign.log"),
+        };
+        sup.state.save(&[foreign.clone()]).expect("save state");
+
+        let killed = sup.stop(None).expect("stop");
+        assert!(killed.is_empty());
+        assert!(sup.status().expect("status").is_empty());
 
         fs::remove_dir_all(&base).ok();
     }
