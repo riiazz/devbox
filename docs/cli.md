@@ -81,15 +81,39 @@ Registers a tool manually. Replaces a tool with the same name and version.
 `--dir` defaults to the registry directory (`.devbox/tools/`).
 Requires an initialized workspace.
 
-### `devbox up`
+### `devbox up [--service <name>...] [--log-lines <n>]`
 
 Starts every service declared in the `[services]` section of `devbox.toml`
 (v0.9). Each service runs inside the isolated DevBox environment (see
 [runtime.md](runtime.md)) with stdout/stderr appended to
 `.devbox/workspace/logs/<name>.log`, and its PID is recorded in
-`.devbox/workspace/processes.toml`. `devbox up` supervises the services in the
-foreground, printing each exit as it happens, and exits once all services have
-stopped. Any previously supervised services are stopped first.
+`.devbox/workspace/processes.toml`. Any previously supervised services are
+stopped first.
+
+`devbox up` supervises the services in the foreground and redraws a live
+dashboard once a second:
+
+    devbox running with pid: 3333
+
+    | service    | status  | pid  | parent_pid | cpu | memory | listening      |
+    | ---------- | ------- | ---- | ---------- | --- | ------ | -------------- |
+    | caddy      | running | 1100 | 3333       | 3%  | 2kb    | localhost:2009 |
+    | rbac       | running | 1231 | 3333       | 5%  | 3mb    | localhost:4041 |
+    | rbac-child | running | 1235 | 1231       |     |        |                |
+
+    logs:
+    ---
+    service: caddy
+    ...
+
+The table reports each service's PID and parent PID, its current CPU usage and
+memory, and the ports it is listening on. The logs section tails the last
+`--log-lines` lines (default 5) for the first five services — or only the
+services named by `--service` (repeatable).
+
+Pressing Ctrl+C — or closing the terminal — interrupts the dashboard, stops the
+supervised services, and clears the supervisor state. The dashboard also exits
+once every service has stopped on its own.
 
 Process tree:
 
@@ -98,9 +122,13 @@ Process tree:
     ├── Redis
     └── OTel
 
-Example:
+Examples:
 
     devbox up
+
+    devbox up --service caddy --log-lines 20
+
+    devbox up --service caddy --service rbac
 
 ### `devbox status`
 
@@ -125,7 +153,10 @@ Examples:
 ### `devbox stop [name...]`
 
 Stops supervised services, terminating each process tree and pruning it from
-the supervisor state. With no names, stops every supervised service.
+the supervisor state. With no names, stops every supervised service. Only PIDs
+still confirmed to be children of the devbox process that spawned them are
+terminated — a PID that has since been reused by another program is left alone
+and simply pruned from the state.
 
 Examples:
 

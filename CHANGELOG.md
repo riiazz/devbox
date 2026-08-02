@@ -3,6 +3,26 @@
 All notable changes to DevBox are documented in this file. DevBox follows
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **Live `devbox up` dashboard** — `devbox up` now redraws a dashboard every
+  second showing each service's status, PID, parent PID, current CPU usage,
+  memory, listening ports, and live logs. Logs default to the first five
+  services and the last five lines each; `--service <name>` (repeatable) picks
+  which services to follow and `--log-lines <n>` controls log depth.
+- **Graceful interrupt** — Ctrl+C (or closing the terminal) stops the
+  supervised services and clears the supervisor state instead of leaving them
+  running.
+
+### Changed
+
+- **Safe `devbox stop`** — `stop` (and the startup cleanup in `devbox up`)
+  only terminates PIDs still verified to be children of the devbox process
+  that spawned them. A PID reused by another program is left alone and pruned
+  from the state file, which now records each process's parent PID.
+
 ## [1.0.0] - 2026-08-02
 
 DevBox is now a stable, reproducible development environment tool. The full

@@ -2,6 +2,9 @@ use clap::{Parser, Subcommand};
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
 
 use config::Config;
 use toolchain::ToolRegistry;
@@ -44,7 +47,7 @@ enum Commands {
     Tools(ToolsArgs),
 
     /// Start the services defined in [services]
-    Up,
+    Up(UpArgs),
 }
 
 #[derive(Debug, clap::Args)]
@@ -90,6 +93,17 @@ struct RegisterArgs {
 }
 
 #[derive(Debug, clap::Args)]
+struct UpArgs {
+    /// Services to show live logs for (defaults to the first five)
+    #[arg(short, long)]
+    service: Vec<String>,
+
+    /// Number of trailing log lines shown per service
+    #[arg(long, default_value_t = 5)]
+    log_lines: usize,
+}
+
+#[derive(Debug, clap::Args)]
 struct ExecArgs {
     /// Program to run
     program: String,
@@ -127,7 +141,7 @@ fn main() -> ExitCode {
         Commands::Status => status(),
         Commands::Stop(args) => stop(&args),
         Commands::Tools(args) => tools(&args),
-        Commands::Up => up(),
+        Commands::Up(args) => up(&args),
     }
 }
 
@@ -421,7 +435,7 @@ fn require_workspace() -> Result<workspace::Workspace, ExitCode> {
     })
 }
 
-fn up() -> ExitCode {
+fn up(args: &UpArgs) -> ExitCode {
     let ws = match require_workspace() {
         Ok(ws) => ws,
         Err(code) => return code,
@@ -440,6 +454,13 @@ fn up() -> ExitCode {
         return ExitCode::FAILURE;
     }
 
+    let stop = Arc::new(AtomicBool::new(false));
+    let flag = Arc::clone(&stop);
+    if let Err(err) = ctrlc::set_handler(move || flag.store(true, Ordering::SeqCst)) {
+        eprintln!("devbox: failed to install Ctrl+C handler: {err}");
+        return ExitCode::FAILURE;
+    }
+
     let mut runtime = runtime::Runtime::new();
     if let Some(code) = prepare_runtime(&mut runtime) {
         return code;
@@ -449,19 +470,24 @@ fn up() -> ExitCode {
     sup.stop(None).ok();
     match sup.spawn_all(&config.services, runtime.environment()) {
         Ok(mut children) => {
-            println!(
-                "devbox: starting {} service(s) for {}",
-                children.len(),
-                ws.root().display()
-            );
-            if let Err(err) = sup.monitor(&mut children) {
-                eprintln!("devbox: {err}");
-                sup.stop(None).ok();
-                return ExitCode::FAILURE;
-            }
+            let opts = supervisor::dashboard::Options {
+                watch: args.service.clone(),
+                log_lines: args.log_lines,
+                refresh: Duration::from_secs(1),
+                stop,
+            };
+            let result = supervisor::dashboard::run(&mut children, &opts);
             sup.stop(None).ok();
-            println!("devbox: all services stopped");
-            ExitCode::SUCCESS
+            match result {
+                Ok(_exit) => {
+                    println!("devbox: all services stopped");
+                    ExitCode::SUCCESS
+                }
+                Err(err) => {
+                    eprintln!("devbox: {err}");
+                    ExitCode::FAILURE
+                }
+            }
         }
         Err(err) => {
             eprintln!("devbox: {err}");

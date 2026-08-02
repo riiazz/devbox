@@ -56,6 +56,19 @@ key is the service name; its value describes how to run it:
 | `cwd`         | Working directory (relative to the workspace) |
 | `environment` | Extra environment variables for this service  |
 
+`command` is the executable to launch, resolved like any program name: against
+`PATH`, which includes the executable directories of installed tools. `cwd`
+only sets the process working directory — it does not locate the executable.
+To run a binary from an installed tool, register it (`devbox tools register` or
+`devbox install`) and use its name as `command`, or point `command` at the full
+path and pass the subcommand via `args`:
+
+```toml
+[services.caddy]
+command = "caddy"
+args = ["run"]
+```
+
 Services run inside the isolated DevBox environment with their output
 appended to `.devbox/workspace/logs/<name>.log`. See [cli.md](cli.md) for
 `devbox up`, `status`, `logs`, and `stop`.

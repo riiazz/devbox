@@ -18,6 +18,7 @@ Version 1.0.0 — stable.
 - Shell (`devbox shell`, interactive PowerShell/bash inside the environment)
 - Environment Isolation (`HOME`, `TMP`, `NUGET_PACKAGES`, `DOTNET_ROOT` point into `.devbox`)
 - Process Supervisor (`devbox up`, `status`, `logs`, `stop` for `[services]`)
+- Live `devbox up` dashboard (status, CPU, memory, ports, logs; Ctrl+C stops services)
 - `devbox install` resolves tools through the `[tools]` config section
 - Idempotent `devbox init`
 

@@ -10,6 +10,7 @@ path = "src/main.rs"
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 config = { path = "../config" }
+ctrlc = "3"
 downloader = { path = "../downloader" }
 runtime = { path = "../runtime" }
 supervisor = { path = "../supervisor" }

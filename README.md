@@ -50,7 +50,7 @@ devbox exec rg --version
 | `devbox shell` | Open an interactive shell inside the environment |
 | `devbox install <name> [--version <v>]` | Download and register a tool |
 | `devbox tools list` / `devbox tools register` | Manage the tool registry |
-| `devbox up` | Start and supervise `[services]` |
+| `devbox up [--service <name>...] [--log-lines <n>]` | Start and supervise `[services]` with a live dashboard |
 | `devbox status` | Report service PIDs and status |
 | `devbox logs [name] [--lines <n>]` | Print service logs |
 | `devbox stop [name...]` | Stop supervised services |

@@ -431,7 +431,7 @@ mod tests {
             parent_pid: u32::MAX,
             log_file: base.join("logs").join("foreign.log"),
         };
-        sup.state.save(&[foreign.clone()]).expect("save state");
+        sup.state.save(std::slice::from_ref(&foreign)).expect("save state");
 
         let killed = sup.stop(None).expect("stop");
         assert!(killed.is_empty());
