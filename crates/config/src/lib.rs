@@ -1,3 +1,3 @@
 pub mod config;
 
-pub use config::{Config, ConfigError, FILE_NAME, Workspace};
+pub use config::{Config, ConfigError, Service, Workspace, FILE_NAME};

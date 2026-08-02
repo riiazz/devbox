@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -40,11 +40,24 @@ pub enum ConfigError {
 pub struct Config {
     pub workspace: Workspace,
     pub environment: BTreeMap<String, String>,
+    pub services: BTreeMap<String, Service>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Workspace {
     pub name: String,
+}
+
+/// A long-running process managed by `devbox up` (version 0.9).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Service {
+    pub command: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default)]
+    pub cwd: Option<PathBuf>,
+    #[serde(default)]
+    pub environment: BTreeMap<String, String>,
 }
 
 impl Config {
@@ -128,6 +141,7 @@ DOTNET_ENVIRONMENT = "Development"
                 name: "Planning".into(),
             },
             environment: BTreeMap::from([("A".into(), "B".into())]),
+            services: BTreeMap::new(),
         };
         config.save(&path).expect("save config");
 
@@ -143,6 +157,78 @@ DOTNET_ENVIRONMENT = "Development"
         let path = temp_file("invalid.toml");
         fs::write(&path, "not toml [").expect("write config");
         assert!(matches!(Config::load(&path), Err(ConfigError::Parse { .. })));
+        fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn parses_services() {
+        let path = temp_file("services.toml");
+        fs::write(
+            &path,
+            r#"
+[workspace]
+name = "Planning"
+
+[environment]
+DOTNET_ENVIRONMENT = "Development"
+
+[services.api]
+command = "dotnet"
+args = ["run", "--project", "src/Api"]
+cwd = "src"
+environment = { LOG_LEVEL = "info" }
+
+[services.redis]
+command = "redis-server"
+"#,
+        )
+        .expect("write config");
+
+        let config = Config::load(&path).expect("load config");
+        let api = config.services.get("api").expect("api service");
+        assert_eq!(api.command, "dotnet");
+        assert_eq!(api.args, ["run", "--project", "src/Api"]);
+        assert_eq!(api.cwd.as_deref(), Some(Path::new("src")));
+        assert_eq!(api.environment.get("LOG_LEVEL").map(String::as_str), Some("info"));
+        assert_eq!(config.services.get("redis").expect("redis service").command, "redis-server");
+        assert!(!config.services.contains_key("missing"));
+
+        fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn missing_services_defaults_to_empty() {
+        let path = temp_file("noservices.toml");
+        fs::write(&path, "[workspace]\nname = \"x\"\n").expect("write config");
+        let config = Config::load(&path).expect("load config");
+        assert!(config.services.is_empty());
+        fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn services_round_trip() {
+        let path = temp_file("services-roundtrip.toml");
+        let config = Config {
+            workspace: Workspace {
+                name: "Planning".into(),
+            },
+            environment: BTreeMap::new(),
+            services: BTreeMap::from([(
+                "api".into(),
+                Service {
+                    command: "dotnet".into(),
+                    args: vec!["run".into()],
+                    cwd: None,
+                    environment: BTreeMap::new(),
+                },
+            )]),
+        };
+        config.save(&path).expect("save config");
+
+        let loaded = Config::load(&path).expect("load config");
+        assert_eq!(loaded.services["api"].command, "dotnet");
+        assert_eq!(loaded.services["api"].args, ["run"]);
+
         fs::remove_file(&path).ok();
     }
 }

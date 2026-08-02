@@ -8,6 +8,8 @@ tree owned by DevBox. No downloads yet — only structure.
     <project>/
     └── .devbox/
         ├── workspace/
+        │   ├── logs/
+        │   └── processes.toml
         ├── cache/
         │   └── nuget/packages/
         ├── tools/
@@ -30,3 +32,6 @@ running it again is a no-op.
 | `tools`    | tool installs and `registry.toml`  |
 | `tmp`      | temporary files for processes      |
 | `home`     | isolated `HOME` (v0.8)             |
+
+The workspace directory also holds the process supervisor's state and logs
+(v0.9): `logs/` for per-service output and `processes.toml` for running PIDs.

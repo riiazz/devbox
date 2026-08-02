@@ -75,3 +75,55 @@ Lists registered tools, ordered by name then version. Example:
 Registers a tool manually. Replaces a tool with the same name and version.
 `--dir` defaults to the registry directory (`.devbox/tools/`).
 Requires an initialized workspace.
+
+### `devbox up`
+
+Starts every service declared in the `[services]` section of `devbox.toml`
+(v0.9). Each service runs inside the isolated DevBox environment (see
+[runtime.md](runtime.md)) with stdout/stderr appended to
+`.devbox/workspace/logs/<name>.log`, and its PID is recorded in
+`.devbox/workspace/processes.toml`. `devbox up` supervises the services in the
+foreground, printing each exit as it happens, and exits once all services have
+stopped. Any previously supervised services are stopped first.
+
+Process tree:
+
+    DevBox
+    ├── API
+    ├── Redis
+    └── OTel
+
+Example:
+
+    devbox up
+
+### `devbox status`
+
+Reads the supervisor state and reports each service's PID and whether it is
+still running. Example:
+
+    NAME         PID  STATUS
+    api         1234  running
+    redis       5678  stopped
+
+### `devbox logs [name] [--lines <n>]`
+
+Prints the trailing log lines for a service (all services when `name` is
+omitted, default 100 lines). Logs are the live files written by `devbox up`.
+
+Examples:
+
+    devbox logs api
+
+    devbox logs redis --lines 50
+
+### `devbox stop [name...]`
+
+Stops supervised services, terminating each process tree and pruning it from
+the supervisor state. With no names, stops every supervised service.
+
+Examples:
+
+    devbox stop redis
+
+    devbox stop

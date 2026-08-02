@@ -28,11 +28,23 @@ enum Commands {
     /// Download and register a tool
     Install(InstallArgs),
 
+    /// Print service logs
+    Logs(LogsArgs),
+
     /// Open an interactive shell inside the DevBox environment
     Shell,
 
+    /// Show status of the services supervised by `devbox up`
+    Status,
+
+    /// Stop services supervised by `devbox up`
+    Stop(StopArgs),
+
     /// Manage the tool registry
     Tools(ToolsArgs),
+
+    /// Start the services defined in [services]
+    Up,
 }
 
 #[derive(Debug, clap::Args)]
@@ -87,14 +99,35 @@ struct ExecArgs {
     args: Vec<String>,
 }
 
+#[derive(Debug, clap::Args)]
+struct LogsArgs {
+    /// Service name (all services when omitted)
+    name: Option<String>,
+
+    /// Number of trailing lines to print
+    #[arg(short, long, default_value_t = 100)]
+    lines: usize,
+}
+
+#[derive(Debug, clap::Args)]
+struct StopArgs {
+    /// Services to stop (all services when omitted)
+    #[arg(trailing_var_arg = true)]
+    names: Vec<String>,
+}
+
 fn main() -> ExitCode {
     let cli = Cli::parse();
     match cli.command {
         Commands::Exec(args) => exec(&args),
         Commands::Init => init(),
         Commands::Install(args) => install(&args),
+        Commands::Logs(args) => logs(&args),
         Commands::Shell => shell(),
+        Commands::Status => status(),
+        Commands::Stop(args) => stop(&args),
         Commands::Tools(args) => tools(&args),
+        Commands::Up => up(),
     }
 }
 
@@ -350,6 +383,161 @@ fn find_config(ws: &workspace::Workspace) -> Option<PathBuf> {
     path.is_file().then_some(path)
 }
 
+/// A supervisor rooted in the workspace: state and logs live under
+/// `.devbox/workspace/`, relative service working directories resolve against
+/// the workspace root.
+fn supervisor(ws: &workspace::Workspace) -> supervisor::Supervisor {
+    supervisor::Supervisor::new(
+        ws.workspace_dir().join(supervisor::STATE_FILE),
+        ws.workspace_dir().join("logs"),
+        ws.root(),
+    )
+}
+
+fn require_workspace() -> Result<workspace::Workspace, ExitCode> {
+    workspace::Workspace::discover().map_err(|err| {
+        eprintln!("devbox: {err}");
+        ExitCode::FAILURE
+    })
+}
+
+fn up() -> ExitCode {
+    let ws = match require_workspace() {
+        Ok(ws) => ws,
+        Err(code) => return code,
+    };
+
+    let config_path = ws.root().join(config::FILE_NAME);
+    let config = match config::Config::load(&config_path) {
+        Ok(config) => config,
+        Err(err) => {
+            eprintln!("devbox: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
+    if config.services.is_empty() {
+        eprintln!("devbox: no services defined in the [services] section of devbox.toml");
+        return ExitCode::FAILURE;
+    }
+
+    let mut runtime = runtime::Runtime::new();
+    if let Some(code) = prepare_runtime(&mut runtime) {
+        return code;
+    }
+
+    let sup = supervisor(&ws);
+    sup.stop(None).ok();
+    match sup.spawn_all(&config.services, runtime.environment()) {
+        Ok(mut children) => {
+            println!(
+                "devbox: starting {} service(s) for {}",
+                children.len(),
+                ws.root().display()
+            );
+            if let Err(err) = sup.monitor(&mut children) {
+                eprintln!("devbox: {err}");
+                sup.stop(None).ok();
+                return ExitCode::FAILURE;
+            }
+            sup.stop(None).ok();
+            println!("devbox: all services stopped");
+            ExitCode::SUCCESS
+        }
+        Err(err) => {
+            eprintln!("devbox: {err}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn status() -> ExitCode {
+    let ws = match require_workspace() {
+        Ok(ws) => ws,
+        Err(code) => return code,
+    };
+    match supervisor(&ws).status() {
+        Ok(list) => {
+            if list.is_empty() {
+                println!("No services running. Start them with `devbox up`.");
+                return ExitCode::SUCCESS;
+            }
+            println!("{:<12} {:>8}  STATUS", "NAME", "PID");
+            for entry in list {
+                let status = if entry.running { "running" } else { "stopped" };
+                println!("{:<12} {:>8}  {}", entry.name, entry.pid, status);
+            }
+            ExitCode::SUCCESS
+        }
+        Err(err) => {
+            eprintln!("devbox: {err}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn logs(args: &LogsArgs) -> ExitCode {
+    let ws = match require_workspace() {
+        Ok(ws) => ws,
+        Err(code) => return code,
+    };
+    match supervisor(&ws).log_files(args.name.as_deref()) {
+        Ok(files) => {
+            if files.is_empty() {
+                println!("No logs available.");
+                return ExitCode::SUCCESS;
+            }
+            for (name, path) in &files {
+                if files.len() > 1 {
+                    println!("=== {name} ({}) ===", path.display());
+                }
+                match supervisor::tail_file(path, args.lines) {
+                    Ok(text) => {
+                        print!("{text}");
+                        if !text.ends_with('\n') {
+                            println!();
+                        }
+                    }
+                    Err(err) => {
+                        eprintln!("devbox: failed to read `{}`: {err}", path.display());
+                        return ExitCode::FAILURE;
+                    }
+                }
+            }
+            ExitCode::SUCCESS
+        }
+        Err(err) => {
+            eprintln!("devbox: {err}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn stop(args: &StopArgs) -> ExitCode {
+    let ws = match require_workspace() {
+        Ok(ws) => ws,
+        Err(code) => return code,
+    };
+    let names = if args.names.is_empty() {
+        None
+    } else {
+        Some(args.names.as_slice())
+    };
+    match supervisor(&ws).stop(names) {
+        Ok(killed) => {
+            if killed.is_empty() {
+                println!("No running services to stop.");
+            } else {
+                println!("Stopped: {}", killed.join(", "));
+            }
+            ExitCode::SUCCESS
+        }
+        Err(err) => {
+            eprintln!("devbox: {err}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
 fn init() -> ExitCode {
     let cwd = std::env::current_dir().expect("determine current directory");
     match workspace::Workspace::init(&cwd) {
@@ -363,6 +551,7 @@ fn init() -> ExitCode {
                     name: name.clone(),
                 },
                 environment: Default::default(),
+                services: Default::default(),
             };
             let path = ws.root().join(config::FILE_NAME);
             if let Err(err) = config.save(&path) {

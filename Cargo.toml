@@ -6,6 +6,7 @@ members = [
     "crates/config",
     "crates/downloader",
     "crates/runtime",
+    "crates/supervisor",
     "crates/toolchain",
     "crates/workspace",
 ]

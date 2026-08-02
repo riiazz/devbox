@@ -12,5 +12,6 @@ clap = { version = "4", features = ["derive"] }
 config = { path = "../config" }
 downloader = { path = "../downloader" }
 runtime = { path = "../runtime" }
+supervisor = { path = "../supervisor" }
 toolchain = { path = "../toolchain" }
 workspace = { path = "../workspace" }
