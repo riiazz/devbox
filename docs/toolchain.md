@@ -38,7 +38,11 @@ install_dir = ".devbox/tools/rg/14.1.0"
 ```
 
 Operations: `register`, `unregister`, `get`, `get_exact`, `versions`, `list`,
-`load`, `save`.
+`load`, `save`, `executable_dirs`.
+
+`executable_dirs` returns the bin directory of each installed tool (highest
+version per name first). Version 0.6 prepends these to `PATH` so `devbox exec
+rg` finds `.devbox/tools` instead of the system path.
 
 ## Commands
 
@@ -48,4 +52,5 @@ See [cli.md](cli.md) for `devbox tools list` and `devbox tools register`.
 
 Version 0.5 added the downloader: `devbox install ripgrep` resolves, downloads,
 checksums, extracts, and registers — the final "Register" step lands in this
-registry. Version 0.6 uses the registry to build the isolated `PATH`.
+registry. Version 0.6 completed: `devbox exec` uses `executable_dirs` to build
+the isolated `PATH`. Version 0.7 adds `devbox shell`.

@@ -42,4 +42,5 @@ See [cli.md](cli.md) for `devbox install`.
 ## Roadmap
 
 Version 0.6 uses the registry to point `PATH` at installed tools, so
-`devbox exec rg` resolves to `.devbox/tools/...` instead of the system path.
+`devbox exec rg` resolves to `.devbox/tools/...` instead of the system path —
+completed. Version 0.7 adds `devbox shell`.

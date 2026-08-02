@@ -134,8 +134,8 @@ impl Installer {
 }
 
 fn verify_executable(install_dir: &Path, executable: &str) -> Result<(), InstallError> {
-    let exe_name = format!("{}{}", executable, if cfg!(windows) { ".exe" } else { "" });
-    if find_file(install_dir, &exe_name).is_some() {
+    let exe_name = toolchain::path::executable_name(executable);
+    if toolchain::path::find_file(install_dir, &exe_name).is_some() {
         Ok(())
     } else {
         Err(InstallError::ExecutableNotFound {
@@ -143,25 +143,6 @@ fn verify_executable(install_dir: &Path, executable: &str) -> Result<(), Install
             dir: install_dir.to_path_buf(),
         })
     }
-}
-
-fn find_file(dir: &Path, file_name: &str) -> Option<PathBuf> {
-    let entries = fs::read_dir(dir).ok()?;
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            if let Some(found) = find_file(&path, file_name) {
-                return Some(found);
-            }
-        } else if path
-            .file_name()
-            .map(|name| name.to_string_lossy() == file_name)
-            .unwrap_or(false)
-        {
-            return Some(path);
-        }
-    }
-    None
 }
 
 #[cfg(test)]

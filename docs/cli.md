@@ -5,13 +5,17 @@
 ### `devbox exec <program> [args...]`
 
 Runs `<program>` inside the DevBox environment. Applies the
-`[environment]` section of `devbox.toml` if present.
+`[environment]` section of `devbox.toml` if present, then prepends the
+executable directories of every registered tool to `PATH`, so installed tools
+resolve from `.devbox/tools` ahead of the system (v0.6).
 
 Examples:
 
     devbox exec dotnet --info
 
     devbox exec cargo build
+
+    devbox exec rg --version
 
 Exits with the exit code of the spawned program.
 

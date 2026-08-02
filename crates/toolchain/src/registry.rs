@@ -122,6 +122,28 @@ impl ToolRegistry {
         self.tools.values().collect()
     }
 
+    /// Parent directories of each installed tool's executable, one per tool
+    /// name (highest version first). Used to build the isolated PATH.
+    pub fn executable_dirs(&self) -> Vec<std::path::PathBuf> {
+        let mut dirs = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        for key in self.tools.keys().rev() {
+            if !seen.insert(key.name.as_str()) {
+                continue;
+            }
+            if let Some(tool) = self.tools.get(key)
+                && let Some(dir) = crate::path::find_file(
+                    &tool.install_dir,
+                    &crate::path::executable_name(&tool.executable),
+                )
+                .and_then(|path| path.parent().map(|parent| parent.to_path_buf()))
+            {
+                dirs.push(dir);
+            }
+        }
+        dirs
+    }
+
     pub fn is_empty(&self) -> bool {
         self.tools.is_empty()
     }
@@ -292,5 +314,33 @@ mod tests {
     fn load_missing_file_is_error() {
         let path = temp_file("missing.toml");
         assert!(matches!(ToolRegistry::load(&path), Err(RegistryError::Read { .. })));
+    }
+
+    #[test]
+    fn executable_dirs_returns_bin_dirs_highest_version_first() {
+        let mut registry = ToolRegistry::new();
+        let exe = crate::path::executable_name("rg");
+        let bin_old = Path::new(".devbox").join("tools").join("rg").join("13.0.0").join("bin");
+        let bin_new = Path::new(".devbox").join("tools").join("rg").join("14.1.0").join("bin");
+        fs::create_dir_all(&bin_old).expect("create old bin");
+        fs::create_dir_all(&bin_new).expect("create new bin");
+        fs::write(bin_old.join(&exe), b"old").ok();
+        fs::write(bin_new.join(&exe), b"new").ok();
+
+        registry.register(Tool::new("ripgrep", "13.0.0", "rg", &bin_old));
+        registry.register(Tool::new("ripgrep", "14.1.0", "rg", &bin_new));
+
+        let dirs = registry.executable_dirs();
+        assert_eq!(dirs, vec![bin_new]);
+
+        fs::remove_dir_all(Path::new(".devbox").join("tools")).ok();
+    }
+
+    #[test]
+    fn executable_dirs_skips_missing_binaries() {
+        let mut registry = ToolRegistry::new();
+        let install = Path::new(".devbox").join("tools").join("empty");
+        registry.register(Tool::new("empty", "1.0.0", "empty", install));
+        assert!(registry.executable_dirs().is_empty());
     }
 }

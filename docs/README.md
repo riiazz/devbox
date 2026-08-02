@@ -4,7 +4,7 @@ DevBox is a reproducible development environment tool written in Rust.
 
 ## Status
 
-Version 0.5
+Version 0.6
 
 - CLI parser
 - Runtime
@@ -14,6 +14,7 @@ Version 0.5
 - Config (`devbox.toml`, `[workspace]` and `[environment]`)
 - Tool Registry (`Tool`, registry, `devbox tools`)
 - Downloader (`devbox install ripgrep`, Resolve → Download → Checksum → Extract → Register)
+- Tool Resolution (`devbox exec rg` finds `.devbox/tools`, isolated PATH)
 
 ## Documents
 

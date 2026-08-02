@@ -233,6 +233,13 @@ fn exec(args: &ExecArgs) -> ExitCode {
         }
     }
 
+    if let Some(tool_dirs) = installed_tool_dirs() {
+        let env = runtime.environment_mut();
+        for dir in tool_dirs.iter().rev() {
+            env.prepend_path(dir);
+        }
+    }
+
     match runtime.exec(&args.program, &args.args) {
         Ok(status) => match status.code() {
             Some(code) => ExitCode::from(code as u8),
@@ -243,6 +250,14 @@ fn exec(args: &ExecArgs) -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// Directories containing installed tool executables, highest priority first.
+fn installed_tool_dirs() -> Option<Vec<PathBuf>> {
+    let ws = workspace::Workspace::discover().ok()?;
+    let path = ws.tools_dir().join(toolchain::REGISTRY_FILE);
+    let registry = toolchain::ToolRegistry::load(&path).ok()?;
+    Some(registry.executable_dirs())
 }
 
 fn apply_environment(runtime: &mut runtime::Runtime, config: &Config) {
