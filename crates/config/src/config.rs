@@ -66,6 +66,11 @@ pub struct Service {
 pub struct ToolConfig {
     pub default_version: String,
     pub executable: String,
+    /// Asset filename template, e.g. `caddy_{version}_{os}_{arch}.{ext}`.
+    /// Placeholders: `{name}`, `{version}`, `{os}`, `{arch}`, `{triple}`,
+    /// `{ext}`. Defaults to `{name}-{version}-{triple}.{ext}`.
+    #[serde(default)]
+    pub asset: Option<String>,
     #[serde(default)]
     pub github: GithubSource,
 }
@@ -263,10 +268,20 @@ name = "Planning"
 [tools.git]
 default_version = "2.45.0"
 executable = "git"
+asset = "git-{version}-{triple}.{ext}"
 
 [tools.git.github]
 owner = "git-for-windows"
 repo = "git"
+
+[tools.caddy]
+default_version = "2.11.3"
+executable = "caddy"
+asset = "caddy_{version}_{os}_{arch}.{ext}"
+
+[tools.caddy.github]
+owner = "caddyserver"
+repo = "caddy"
 
 [tools.rg]
 default_version = "14.1.0"
@@ -285,7 +300,11 @@ repo = "ripgrep"
         assert_eq!(git.executable, "git");
         assert_eq!(git.github.owner, "git-for-windows");
         assert_eq!(git.github.repo, "git");
+        assert_eq!(git.asset.as_deref(), Some("git-{version}-{triple}.{ext}"));
+        let caddy = config.tools.get("caddy").expect("caddy tool");
+        assert_eq!(caddy.asset.as_deref(), Some("caddy_{version}_{os}_{arch}.{ext}"));
         assert_eq!(config.tools["rg"].executable, "rg");
+        assert_eq!(config.tools["rg"].asset, None);
         assert!(!config.tools.contains_key("missing"));
 
         fs::remove_file(&path).ok();
@@ -314,6 +333,7 @@ repo = "ripgrep"
                 ToolConfig {
                     default_version: "2.45.0".into(),
                     executable: "git".into(),
+                    asset: None,
                     github: GithubSource {
                         owner: "git-for-windows".into(),
                         repo: "git".into(),

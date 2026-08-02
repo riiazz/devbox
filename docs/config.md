@@ -70,11 +70,35 @@ describes its GitHub release assets:
 |-------------------|----------------------------------------------------|
 | `default_version` | Version used when `--version` is omitted           |
 | `executable`      | Executable name inside the archive, e.g. `git`     |
+| `asset`           | Asset filename template (default `{name}-{version}-{triple}.{ext}`) |
 | `github.owner`    | GitHub owner of the repository, e.g. `git-for-windows` |
 | `github.repo`     | GitHub repository name, e.g. `git`                 |
 
 The download URL is derived as
-`https://github.com/{owner}/{repo}/releases/download/{version}/{name}-{version}-{triple}.{ext}`,
-so the tool must publish archives in that exact naming scheme. A `[tools]`
-entry overrides the built-in spec of the same name. See
+`https://github.com/{owner}/{repo}/releases/download/{version}/{asset}`. Without
+an `asset` template this is
+`{name}-{version}-{triple}.{ext}`, so the tool must publish archives in that
+exact naming scheme. Tools that use a different scheme can declare a custom
+`asset` template with the placeholders `{name}`, `{version}`, `{version_v}`,
+`{os}` (GOOS: `windows`, `linux`, `darwin`), `{arch}` (GOARCH: `amd64`,
+`arm64`), `{triple}` (Rust target triple), and `{ext}`.
+
+Inside an `asset` template, `{version}` drops a leading `v` tag prefix (so a
+release tagged `v2.11.3` becomes `2.11.3`), while `{version_v}` keeps the exact
+release tag. The release tag in the URL path always uses the full version. For
+example, caddy tags releases `v2.11.3` but publishes
+`caddy_2.11.3_windows_amd64.zip`:
+
+```toml
+[tools.caddy]
+default_version = "v2.11.3"
+executable = "caddy"
+asset = "caddy_{version}_{os}_{arch}.{ext}"
+
+[tools.caddy.github]
+owner = "caddyserver"
+repo = "caddy"
+```
+
+A `[tools]` entry overrides the built-in spec of the same name. See
 [downloader.md](downloader.md).

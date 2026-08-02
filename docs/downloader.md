@@ -19,10 +19,13 @@ verified, extracted, and registered — nothing is done by hand.
    concrete download source. The manifest starts with the built-in specs
    (`crates/downloader/src/resolve.rs`) and is overlaid with user-defined
    `[tools]` entries from `devbox.toml`, so `devbox install <name>` works for
-   any tool that publishes GitHub release archives named
-   `<name>-<version>-<triple>.<ext>`. Sources are per-platform GitHub
-   releases; the target triple is derived from the running OS and
-   architecture.
+   any tool that publishes GitHub release archives. Sources are per-platform
+   GitHub releases. By default the asset is named
+   `<name>-<version>-<triple>.<ext>` with the target triple derived from the
+   running OS and architecture; a `[tools]` entry may supply an `asset`
+   template (e.g. `caddy_{version}_{os}_{arch}.{ext}`) to match a project's
+   own naming scheme — see [config.md](config.md). Inside the template
+   `{version}` drops a leading `v` tag prefix while `{version_v}` keeps it.
 
 2. **Download** — the archive is fetched with `reqwest` into
    `.devbox/cache/<name>-<version>.<ext>`. A matching cached archive is reused.
