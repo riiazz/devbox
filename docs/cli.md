@@ -21,6 +21,18 @@ Creates the `.devbox/` workspace directory tree and a starter `devbox.toml`
 in the current directory. Idempotent. See [workspace.md](workspace.md) and
 [config.md](config.md).
 
+### `devbox install <name> [--version <version>]`
+
+Resolves, downloads, verifies, extracts, and registers a tool. Version
+defaults to the tool's default version in the manifest. Requires an
+initialized workspace. See [downloader.md](downloader.md).
+
+Examples:
+
+    devbox install ripgrep
+
+    devbox install ripgrep --version 14.1.0
+
 ### `devbox tools`
 
 Manages the tool registry stored at `.devbox/tools/registry.toml`. No

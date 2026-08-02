@@ -10,6 +10,7 @@ path = "src/main.rs"
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 config = { path = "../config" }
+downloader = { path = "../downloader" }
 runtime = { path = "../runtime" }
 toolchain = { path = "../toolchain" }
 workspace = { path = "../workspace" }

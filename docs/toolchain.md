@@ -46,6 +46,6 @@ See [cli.md](cli.md) for `devbox tools list` and `devbox tools register`.
 
 ## Roadmap
 
-Version 0.5 adds the downloader: `devbox install ripgrep` resolves, downloads,
-checksums, extracts, and registers — the final "Register" step lands here.
-Version 0.6 uses the registry to build the isolated `PATH`.
+Version 0.5 added the downloader: `devbox install ripgrep` resolves, downloads,
+checksums, extracts, and registers — the final "Register" step lands in this
+registry. Version 0.6 uses the registry to build the isolated `PATH`.

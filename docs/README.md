@@ -4,7 +4,7 @@ DevBox is a reproducible development environment tool written in Rust.
 
 ## Status
 
-Version 0.4
+Version 0.5
 
 - CLI parser
 - Runtime
@@ -12,7 +12,8 @@ Version 0.4
 - Process spawning
 - Workspace (`devbox init`, `.devbox/` directory tree)
 - Config (`devbox.toml`, `[workspace]` and `[environment]`)
-- Tool Registry (`Tool`, registry, `devbox tools`, no downloads yet)
+- Tool Registry (`Tool`, registry, `devbox tools`)
+- Downloader (`devbox install ripgrep`, Resolve → Download → Checksum → Extract → Register)
 
 ## Documents
 
@@ -23,6 +24,7 @@ Version 0.4
 | [workspace.md](workspace.md) | `.devbox/` workspace |
 | [config.md](config.md) | `devbox.toml` configuration |
 | [toolchain.md](toolchain.md) | Tool registry |
+| [downloader.md](downloader.md) | Tool download and install pipeline |
 | [Architecture.md](Architecture.md) | Target architecture |
 | [Principles.md](Principles.md) | Design principles |
 | [Roadmap.md](Roadmap.md) | Versioned roadmap |

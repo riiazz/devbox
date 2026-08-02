@@ -4,6 +4,7 @@ resolver = "2"
 members = [
     "crates/cli",
     "crates/config",
+    "crates/downloader",
     "crates/runtime",
     "crates/toolchain",
     "crates/workspace",
