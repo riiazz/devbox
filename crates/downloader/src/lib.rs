@@ -9,5 +9,5 @@ pub use checksum::{Checksum, ChecksumParseError};
 pub use download::DownloadError;
 pub use extract::{extract, ArchiveFormat, ExtractError};
 pub use installer::{InstallError, Installer};
-pub use resolve::{resolve, resolve_source, GitHubRepo, ResolveError, Source, ToolSpec};
+pub use resolve::{resolve_source, GitHubRepo, Manifest, ResolveError, Source, ToolSpec};
 pub use target::Target;

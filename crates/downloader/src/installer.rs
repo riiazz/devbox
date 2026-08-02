@@ -8,7 +8,7 @@ use toolchain::{Tool, ToolRegistry};
 use crate::checksum::Checksum;
 use crate::download::{self, DownloadError};
 use crate::extract::{self, ArchiveFormat, ExtractError};
-use crate::resolve::{resolve, resolve_source, Source};
+use crate::resolve::{resolve_source, Manifest, Source};
 use crate::target::Target;
 
 #[derive(Debug, Error)]
@@ -42,14 +42,26 @@ pub struct Installer {
     client: reqwest::blocking::Client,
     install_root: PathBuf,
     cache_dir: PathBuf,
+    manifest: Manifest,
 }
 
 impl Installer {
     pub fn new(install_root: impl Into<PathBuf>, cache_dir: impl Into<PathBuf>) -> Self {
+        Self::with_manifest(install_root, cache_dir, Manifest::builtin())
+    }
+
+    /// An installer that resolves tools against `manifest` (built-in specs
+    /// plus any user-defined `[tools]` entries).
+    pub fn with_manifest(
+        install_root: impl Into<PathBuf>,
+        cache_dir: impl Into<PathBuf>,
+        manifest: Manifest,
+    ) -> Self {
         Self {
             client: reqwest::blocking::Client::new(),
             install_root: install_root.into(),
             cache_dir: cache_dir.into(),
+            manifest,
         }
     }
 
@@ -60,10 +72,13 @@ impl Installer {
         name: &str,
         version: Option<&str>,
     ) -> Result<Tool, InstallError> {
-        let spec = resolve(name).ok_or_else(|| InstallError::UnknownTool(name.to_string()))?;
-        let version = version.unwrap_or(spec.default_version);
+        let spec = self
+            .manifest
+            .resolve(name)
+            .ok_or_else(|| InstallError::UnknownTool(name.to_string()))?;
+        let version = version.unwrap_or(&spec.default_version);
         let source = resolve_source(spec, version, &Target::current())?;
-        self.install_source(registry, name, version, spec.executable, &source)
+        self.install_source(registry, name, version, &spec.executable, &source)
     }
 
     /// Runs the pipeline against an explicit source (used by tests).

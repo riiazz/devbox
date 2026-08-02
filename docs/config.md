@@ -19,6 +19,14 @@ environment = { LOG_LEVEL = "info" }
 
 [services.redis]
 command = "redis-server"
+
+[tools.git]
+default_version = "2.45.0"
+executable = "git"
+
+[tools.git.github]
+owner = "git-for-windows"
+repo = "git"
 ```
 
 ## Sections
@@ -51,3 +59,22 @@ key is the service name; its value describes how to run it:
 Services run inside the isolated DevBox environment with their output
 appended to `.devbox/workspace/logs/<name>.log`. See [cli.md](cli.md) for
 `devbox up`, `status`, `logs`, and `stop`.
+
+### `[tools]`
+
+A table of tools `devbox install` can resolve, beyond the built-in manifest
+(which currently ships `ripgrep`). Each key is the tool name; its value
+describes its GitHub release assets:
+
+| Key               | Description                                        |
+|-------------------|----------------------------------------------------|
+| `default_version` | Version used when `--version` is omitted           |
+| `executable`      | Executable name inside the archive, e.g. `git`     |
+| `github.owner`    | GitHub owner of the repository, e.g. `git-for-windows` |
+| `github.repo`     | GitHub repository name, e.g. `git`                 |
+
+The download URL is derived as
+`https://github.com/{owner}/{repo}/releases/download/{version}/{name}-{version}-{triple}.{ext}`,
+so the tool must publish archives in that exact naming scheme. A `[tools]`
+entry overrides the built-in spec of the same name. See
+[downloader.md](downloader.md).

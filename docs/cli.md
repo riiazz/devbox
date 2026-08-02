@@ -50,14 +50,18 @@ in the current directory. Idempotent. See [workspace.md](workspace.md) and
 ### `devbox install <name> [--version <version>]`
 
 Resolves, downloads, verifies, extracts, and registers a tool. Version
-defaults to the tool's default version in the manifest. Requires an
-initialized workspace. See [downloader.md](downloader.md).
+defaults to the tool's default version. The tool must be in the built-in
+manifest or declared in the `[tools]` section of `devbox.toml` (see
+[config.md](config.md)). Requires an initialized workspace. See
+[downloader.md](downloader.md).
 
 Examples:
 
     devbox install ripgrep
 
     devbox install ripgrep --version 14.1.0
+
+    devbox install git
 
 ### `devbox tools`
 

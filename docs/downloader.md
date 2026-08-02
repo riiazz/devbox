@@ -15,10 +15,14 @@ verified, extracted, and registered — nothing is done by hand.
 
 ## Pipeline
 
-1. **Resolve** — a tool name is looked up in the built-in manifest
-   (`crates/downloader/src/resolve.rs`) and mapped to a concrete download
-   source. Sources are per-platform GitHub releases; the target triple is
-   derived from the running OS and architecture.
+1. **Resolve** — a tool name is looked up in the tool manifest and mapped to a
+   concrete download source. The manifest starts with the built-in specs
+   (`crates/downloader/src/resolve.rs`) and is overlaid with user-defined
+   `[tools]` entries from `devbox.toml`, so `devbox install <name>` works for
+   any tool that publishes GitHub release archives named
+   `<name>-<version>-<triple>.<ext>`. Sources are per-platform GitHub
+   releases; the target triple is derived from the running OS and
+   architecture.
 
 2. **Download** — the archive is fetched with `reqwest` into
    `.devbox/cache/<name>-<version>.<ext>`. A matching cached archive is reused.

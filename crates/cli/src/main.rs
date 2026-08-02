@@ -148,7 +148,14 @@ fn install(args: &InstallArgs) -> ExitCode {
         }
     };
 
-    let installer = downloader::Installer::new(ws.tools_dir(), ws.cache_dir());
+    let manifest = match build_manifest(&ws) {
+        Ok(manifest) => manifest,
+        Err(err) => {
+            eprintln!("devbox: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let installer = downloader::Installer::with_manifest(ws.tools_dir(), ws.cache_dir(), manifest);
     match installer.install(&mut registry, &args.name, args.version.as_deref()) {
         Ok(tool) => {
             if let Err(err) = registry.save(&registry_path) {
@@ -383,6 +390,19 @@ fn find_config(ws: &workspace::Workspace) -> Option<PathBuf> {
     path.is_file().then_some(path)
 }
 
+/// The tool manifest `devbox install` resolves against: the built-in specs,
+/// overlaid with user-defined `[tools]` entries from `devbox.toml`.
+fn build_manifest(ws: &workspace::Workspace) -> Result<downloader::Manifest, config::ConfigError> {
+    let mut manifest = downloader::Manifest::builtin();
+    if let Some(config_path) = find_config(ws) {
+        let config = config::Config::load(&config_path)?;
+        for (name, tool) in config.tools {
+            manifest.add(downloader::ToolSpec::from((name, tool)));
+        }
+    }
+    Ok(manifest)
+}
+
 /// A supervisor rooted in the workspace: state and logs live under
 /// `.devbox/workspace/`, relative service working directories resolve against
 /// the workspace root.
@@ -552,6 +572,7 @@ fn init() -> ExitCode {
                 },
                 environment: Default::default(),
                 services: Default::default(),
+                tools: Default::default(),
             };
             let path = ws.root().join(config::FILE_NAME);
             if let Err(err) = config.save(&path) {

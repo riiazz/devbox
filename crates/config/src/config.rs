@@ -41,6 +41,7 @@ pub struct Config {
     pub workspace: Workspace,
     pub environment: BTreeMap<String, String>,
     pub services: BTreeMap<String, Service>,
+    pub tools: BTreeMap<String, ToolConfig>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -58,6 +59,22 @@ pub struct Service {
     pub cwd: Option<PathBuf>,
     #[serde(default)]
     pub environment: BTreeMap<String, String>,
+}
+
+/// A user-defined tool resolvable by `devbox install` (version 0.10).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ToolConfig {
+    pub default_version: String,
+    pub executable: String,
+    #[serde(default)]
+    pub github: GithubSource,
+}
+
+/// The GitHub repository that publishes a tool's release archives.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct GithubSource {
+    pub owner: String,
+    pub repo: String,
 }
 
 impl Config {
@@ -142,6 +159,7 @@ DOTNET_ENVIRONMENT = "Development"
             },
             environment: BTreeMap::from([("A".into(), "B".into())]),
             services: BTreeMap::new(),
+            tools: BTreeMap::new(),
         };
         config.save(&path).expect("save config");
 
@@ -222,12 +240,91 @@ command = "redis-server"
                     environment: BTreeMap::new(),
                 },
             )]),
+            tools: BTreeMap::new(),
         };
         config.save(&path).expect("save config");
 
         let loaded = Config::load(&path).expect("load config");
         assert_eq!(loaded.services["api"].command, "dotnet");
         assert_eq!(loaded.services["api"].args, ["run"]);
+
+        fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn parses_tools() {
+        let path = temp_file("tools.toml");
+        fs::write(
+            &path,
+            r#"
+[workspace]
+name = "Planning"
+
+[tools.git]
+default_version = "2.45.0"
+executable = "git"
+
+[tools.git.github]
+owner = "git-for-windows"
+repo = "git"
+
+[tools.rg]
+default_version = "14.1.0"
+executable = "rg"
+
+[tools.rg.github]
+owner = "BurntSushi"
+repo = "ripgrep"
+"#,
+        )
+        .expect("write config");
+
+        let config = Config::load(&path).expect("load config");
+        let git = config.tools.get("git").expect("git tool");
+        assert_eq!(git.default_version, "2.45.0");
+        assert_eq!(git.executable, "git");
+        assert_eq!(git.github.owner, "git-for-windows");
+        assert_eq!(git.github.repo, "git");
+        assert_eq!(config.tools["rg"].executable, "rg");
+        assert!(!config.tools.contains_key("missing"));
+
+        fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn missing_tools_defaults_to_empty() {
+        let path = temp_file("notools.toml");
+        fs::write(&path, "[workspace]\nname = \"x\"\n").expect("write config");
+        let config = Config::load(&path).expect("load config");
+        assert!(config.tools.is_empty());
+        fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn tools_round_trip() {
+        let path = temp_file("tools-roundtrip.toml");
+        let config = Config {
+            workspace: Workspace {
+                name: "Planning".into(),
+            },
+            environment: BTreeMap::new(),
+            services: BTreeMap::new(),
+            tools: BTreeMap::from([(
+                "git".into(),
+                ToolConfig {
+                    default_version: "2.45.0".into(),
+                    executable: "git".into(),
+                    github: GithubSource {
+                        owner: "git-for-windows".into(),
+                        repo: "git".into(),
+                    },
+                },
+            )]),
+        };
+        config.save(&path).expect("save config");
+
+        let loaded = Config::load(&path).expect("load config");
+        assert_eq!(loaded.tools["git"].github.repo, "git");
 
         fs::remove_file(&path).ok();
     }

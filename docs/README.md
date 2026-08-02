@@ -11,7 +11,7 @@ Version 0.9
 - Environment Builder
 - Process spawning
 - Workspace (`devbox init`, `.devbox/` directory tree)
-- Config (`devbox.toml`, `[workspace]`, `[environment]`, `[services]`)
+- Config (`devbox.toml`, `[workspace]`, `[environment]`, `[services]`, `[tools]`)
 - Tool Registry (`Tool`, registry, `devbox tools`)
 - Downloader (`devbox install ripgrep`, Resolve → Download → Checksum → Extract → Register)
 - Tool Resolution (`devbox exec rg` finds `.devbox/tools`, isolated PATH)
