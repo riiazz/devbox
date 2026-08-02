@@ -59,6 +59,19 @@ pub struct Service {
     pub cwd: Option<PathBuf>,
     #[serde(default)]
     pub environment: BTreeMap<String, String>,
+    /// Whether `devbox up` should start this service. Set to `false` to keep a
+    /// service defined without starting it. Defaults to enabled so existing
+    /// configs keep their current behavior.
+    #[serde(default = "default_enabled", skip_serializing_if = "is_enabled")]
+    pub enabled: bool,
+}
+
+fn default_enabled() -> bool {
+    true
+}
+
+fn is_enabled(enabled: &bool) -> bool {
+    *enabled
 }
 
 /// A user-defined tool resolvable by `devbox install` (version 0.10).
@@ -243,6 +256,7 @@ command = "redis-server"
                     args: vec!["run".into()],
                     cwd: None,
                     environment: BTreeMap::new(),
+                    enabled: true,
                 },
             )]),
             tools: BTreeMap::new(),
@@ -252,6 +266,48 @@ command = "redis-server"
         let loaded = Config::load(&path).expect("load config");
         assert_eq!(loaded.services["api"].command, "dotnet");
         assert_eq!(loaded.services["api"].args, ["run"]);
+
+        fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn service_enabled_defaults_to_true() {
+        let path = temp_file("enabled-default.toml");
+        fs::write(
+            &path,
+            r#"
+[services.api]
+command = "dotnet"
+"#,
+        )
+        .expect("write config");
+
+        let config = Config::load(&path).expect("load config");
+        assert!(config.services["api"].enabled);
+
+        fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn service_disabled_round_trips() {
+        let path = temp_file("enabled-toggle.toml");
+        fs::write(
+            &path,
+            r#"
+[services.api]
+command = "dotnet"
+enabled = false
+"#,
+        )
+        .expect("write config");
+
+        let mut config = Config::load(&path).expect("load config");
+        assert!(!config.services["api"].enabled);
+
+        config.services.get_mut("api").expect("api service").enabled = true;
+        config.save(&path).expect("save config");
+        let loaded = Config::load(&path).expect("load config");
+        assert!(loaded.services["api"].enabled);
 
         fs::remove_file(&path).ok();
     }

@@ -1,4 +1,5 @@
 use clap::{Parser, Subcommand};
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -6,7 +7,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use config::Config;
+use config::{Config, Service};
 use toolchain::ToolRegistry;
 
 #[derive(Debug, Parser)]
@@ -36,6 +37,9 @@ enum Commands {
 
     /// Open an interactive shell inside the DevBox environment
     Shell,
+
+    /// Enable or disable services in devbox.toml
+    Services(ServicesArgs),
 
     /// Show status of the services supervised by `devbox up`
     Status,
@@ -104,6 +108,26 @@ struct UpArgs {
 }
 
 #[derive(Debug, clap::Args)]
+struct ServicesArgs {
+    #[command(subcommand)]
+    command: ServicesCommands,
+}
+
+#[derive(Debug, Subcommand)]
+enum ServicesCommands {
+    /// Enable a service so `devbox up` starts it
+    Enable(ServiceRef),
+    /// Disable a service so `devbox up` skips it
+    Disable(ServiceRef),
+}
+
+#[derive(Debug, clap::Args)]
+struct ServiceRef {
+    /// Service name as declared in the `[services]` section of devbox.toml
+    name: String,
+}
+
+#[derive(Debug, clap::Args)]
 struct ExecArgs {
     /// Program to run
     program: String,
@@ -138,6 +162,7 @@ fn main() -> ExitCode {
         Commands::Install(args) => install(&args),
         Commands::Logs(args) => logs(&args),
         Commands::Shell => shell(),
+        Commands::Services(args) => services(&args),
         Commands::Status => status(),
         Commands::Stop(args) => stop(&args),
         Commands::Tools(args) => tools(&args),
@@ -474,6 +499,24 @@ fn up(args: &UpArgs) -> ExitCode {
         return ExitCode::FAILURE;
     }
 
+    let enabled_services: BTreeMap<String, Service> = config
+        .services
+        .iter()
+        .filter(|(_, service)| service.enabled)
+        .map(|(name, service)| (name.clone(), service.clone()))
+        .collect();
+    if enabled_services.is_empty() {
+        eprintln!(
+            "devbox: all services are disabled; enable one with `devbox services enable <name>`"
+        );
+        return ExitCode::FAILURE;
+    }
+    for name in config.services.keys() {
+        if !config.services[name].enabled {
+            println!("devbox: skipping disabled service `{name}`");
+        }
+    }
+
     let stop = Arc::new(AtomicBool::new(false));
     let flag = Arc::clone(&stop);
     if let Err(err) = ctrlc::set_handler(move || flag.store(true, Ordering::SeqCst)) {
@@ -488,7 +531,7 @@ fn up(args: &UpArgs) -> ExitCode {
 
     let sup = supervisor(&ws);
     sup.stop(None).ok();
-    match sup.spawn_all(&config.services, runtime.environment()) {
+    match sup.spawn_all(&enabled_services, runtime.environment()) {
         Ok(mut children) => {
             let opts = supervisor::dashboard::Options {
                 watch: args.service.clone(),
@@ -514,6 +557,44 @@ fn up(args: &UpArgs) -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+fn services(args: &ServicesArgs) -> ExitCode {
+    let ws = match require_workspace() {
+        Ok(ws) => ws,
+        Err(code) => return code,
+    };
+    let config_path = ws.root().join(config::FILE_NAME);
+    let mut config = match config::Config::load(&config_path) {
+        Ok(config) => config,
+        Err(err) => {
+            eprintln!("devbox: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let (name, enabled) = match &args.command {
+        ServicesCommands::Enable(name) => (&name.name, true),
+        ServicesCommands::Disable(name) => (&name.name, false),
+    };
+    let state = if enabled { "enabled" } else { "disabled" };
+
+    if !config.services.contains_key(name) {
+        eprintln!("devbox: no service named `{name}` in devbox.toml");
+        return ExitCode::FAILURE;
+    }
+    if config.services[name].enabled == enabled {
+        println!("Service `{name}` is already {state}");
+        return ExitCode::SUCCESS;
+    }
+
+    config.services.get_mut(name).expect("checked above").enabled = enabled;
+    if let Err(err) = config.save(&config_path) {
+        eprintln!("devbox: {err}");
+        return ExitCode::FAILURE;
+    }
+    println!("Service `{name}` {state}");
+    ExitCode::SUCCESS
 }
 
 fn status() -> ExitCode {

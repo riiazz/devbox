@@ -547,6 +547,7 @@ mod tests {
                 args: vec!["/C".into(), "echo hello".into()],
                 cwd: None,
                 environment: BTreeMap::new(),
+                enabled: true,
             }
         } else {
             Service {
@@ -554,6 +555,7 @@ mod tests {
                 args: vec!["-c".into(), "echo hello".into()],
                 cwd: None,
                 environment: BTreeMap::new(),
+                enabled: true,
             }
         }
     }
@@ -606,6 +608,7 @@ mod tests {
                 args: vec!["/C".into(), "ping -n 60 127.0.0.1 > nul".into()],
                 cwd: None,
                 environment: BTreeMap::new(),
+                enabled: true,
             }
         } else {
             Service {
@@ -613,6 +616,7 @@ mod tests {
                 args: vec!["60".into()],
                 cwd: None,
                 environment: BTreeMap::new(),
+                enabled: true,
             }
         }
     }

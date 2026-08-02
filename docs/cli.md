@@ -81,6 +81,29 @@ Registers a tool manually. Replaces a tool with the same name and version.
 `--dir` defaults to the registry directory (`.devbox/tools/`).
 Requires an initialized workspace.
 
+### `devbox services`
+
+Manages the `enabled` flag of services declared in the `[services]` section of
+`devbox.toml`. Disabled services stay defined in the config but are skipped by
+`devbox up`. Services default to enabled, so existing configs are unaffected
+until a service is explicitly disabled.
+
+#### `devbox services enable <name>`
+
+Marks a service as enabled so `devbox up` starts it. No-op if already enabled.
+
+#### `devbox services disable <name>`
+
+Marks a service as disabled so `devbox up` skips it, writing `enabled = false`
+to the service in `devbox.toml`. No-op if already disabled. Enabling again
+removes the flag.
+
+Examples:
+
+    devbox services disable caddy
+
+    devbox services enable caddy
+
 ### `devbox up [--service <name>...] [--log-lines <n>]`
 
 Starts every service declared in the `[services]` section of `devbox.toml`
