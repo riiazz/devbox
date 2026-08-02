@@ -186,3 +186,17 @@ Examples:
     devbox stop redis
 
     devbox stop
+
+### `devbox clear-logs [name...]`
+
+Truncates the log files written by `devbox up` in `.devbox/workspace/logs/`,
+emptying them while keeping the files so future runs keep appending and the
+services stay visible in `devbox logs`. With no names, clears every service's
+log. Services with no log file are reported as nothing to clear.
+
+Examples:
+
+    devbox clear-logs api
+
+    devbox clear-logs
+

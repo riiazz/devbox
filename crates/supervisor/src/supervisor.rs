@@ -248,6 +248,28 @@ impl Supervisor {
         files.sort_by(|a, b| a.0.cmp(&b.0));
         Ok(files)
     }
+
+    /// Truncates the log files for the named services (or every service when
+    /// `names` is None), returning the services whose logs were cleared. The
+    /// files themselves are kept so future runs keep appending and the services
+    /// stay discoverable by `devbox logs`.
+    pub fn clear_logs(&self, names: Option<&[String]>) -> Result<Vec<String>, SupervisorError> {
+        let mut cleared = Vec::new();
+        for (service, path) in self.log_files(None)? {
+            if names.is_none_or(|names| names.contains(&service)) {
+                fs::OpenOptions::new()
+                    .write(true)
+                    .truncate(true)
+                    .open(&path)
+                    .map_err(|source| SupervisorError::Log {
+                        name: service.clone(),
+                        source,
+                    })?;
+                cleared.push(service);
+            }
+        }
+        Ok(cleared)
+    }
 }
 
 /// True when the recorded process is still a live child of the devbox process
@@ -519,6 +541,58 @@ mod tests {
         assert_eq!(only_api[0].0, "api");
         assert!(sup.log_files(Some("nope")).expect("log files").is_empty());
 
+        fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn clear_logs_truncates_all_when_no_names() {
+        let base = temp_dir();
+        let sup = Supervisor::new(base.join("state.toml"), base.join("logs"), &base);
+        fs::create_dir_all(&sup.log_dir).expect("create logs dir");
+        fs::write(sup.log_dir.join("api.log"), "old\ncontent\n").expect("write log");
+        fs::write(sup.log_dir.join("redis.log"), "more\n").expect("write log");
+
+        let cleared = sup.clear_logs(None).expect("clear logs");
+        assert_eq!(cleared.len(), 2);
+        assert_eq!(
+            fs::read_to_string(sup.log_dir.join("api.log")).expect("read").len(),
+            0
+        );
+        assert_eq!(
+            fs::read_to_string(sup.log_dir.join("redis.log")).expect("read").len(),
+            0
+        );
+
+        fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn clear_logs_filters_by_name() {
+        let base = temp_dir();
+        let sup = Supervisor::new(base.join("state.toml"), base.join("logs"), &base);
+        fs::create_dir_all(&sup.log_dir).expect("create logs dir");
+        fs::write(sup.log_dir.join("api.log"), "old\n").expect("write log");
+        fs::write(sup.log_dir.join("redis.log"), "keep\n").expect("write log");
+
+        let cleared = sup.clear_logs(Some(&["api".into()])).expect("clear logs");
+        assert_eq!(cleared, vec!["api"]);
+        assert_eq!(
+            fs::read_to_string(sup.log_dir.join("api.log")).expect("read").len(),
+            0
+        );
+        assert_eq!(
+            fs::read_to_string(sup.log_dir.join("redis.log")).expect("read"),
+            "keep\n"
+        );
+
+        fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn clear_logs_missing_dir_is_noop() {
+        let base = temp_dir();
+        let sup = Supervisor::new(base.join("state.toml"), base.join("logs"), &base);
+        assert!(sup.clear_logs(None).expect("clear logs").is_empty());
         fs::remove_dir_all(&base).ok();
     }
 }

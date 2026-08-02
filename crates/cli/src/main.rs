@@ -23,6 +23,9 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Commands {
+    /// Truncate service log files (all services when no names given)
+    ClearLogs(ClearLogsArgs),
+
     /// Run a program inside the DevBox environment
     Exec(ExecArgs),
 
@@ -148,6 +151,13 @@ struct LogsArgs {
 }
 
 #[derive(Debug, clap::Args)]
+struct ClearLogsArgs {
+    /// Services whose logs to clear (all services when omitted)
+    #[arg(trailing_var_arg = true)]
+    names: Vec<String>,
+}
+
+#[derive(Debug, clap::Args)]
 struct StopArgs {
     /// Services to stop (all services when omitted)
     #[arg(trailing_var_arg = true)]
@@ -157,6 +167,7 @@ struct StopArgs {
 fn main() -> ExitCode {
     let cli = Cli::parse();
     match cli.command {
+        Commands::ClearLogs(args) => clear_logs(&args),
         Commands::Exec(args) => exec(&args),
         Commands::Init => init(),
         Commands::Install(args) => install(&args),
@@ -551,6 +562,32 @@ fn up(args: &UpArgs) -> ExitCode {
                     ExitCode::FAILURE
                 }
             }
+        }
+        Err(err) => {
+            eprintln!("devbox: {err}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn clear_logs(args: &ClearLogsArgs) -> ExitCode {
+    let ws = match require_workspace() {
+        Ok(ws) => ws,
+        Err(code) => return code,
+    };
+    let names = if args.names.is_empty() {
+        None
+    } else {
+        Some(args.names.as_slice())
+    };
+    match supervisor(&ws).clear_logs(names) {
+        Ok(cleared) => {
+            if cleared.is_empty() {
+                println!("No logs to clear.");
+            } else {
+                println!("Cleared: {}", cleared.join(", "));
+            }
+            ExitCode::SUCCESS
         }
         Err(err) => {
             eprintln!("devbox: {err}");
