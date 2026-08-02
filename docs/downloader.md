@@ -43,5 +43,6 @@ See [cli.md](cli.md) for `devbox install`.
 
 Version 0.6 used the registry to point `PATH` at installed tools, so
 `devbox exec rg` resolves to `.devbox/tools/...` instead of the system path —
-completed. Version 0.7 added `devbox shell` — completed. Version 0.8 isolates
-`HOME`, `TMP`, `DOTNET_ROOT`, and `NUGET_PACKAGES` into `.devbox`.
+completed. Version 0.7 added `devbox shell` — completed. Version 0.8
+completed: `HOME`, `TMP`, `DOTNET_ROOT`, and `NUGET_PACKAGES` are isolated into
+`.devbox`.

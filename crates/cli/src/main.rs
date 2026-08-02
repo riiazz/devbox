@@ -281,20 +281,27 @@ fn shell_command() -> String {
     }
 }
 
-/// Applies `[environment]` from `devbox.toml` and prepends installed tool
-/// directories to `PATH`. Returns `Some(ExitCode)` on failure.
+/// Applies v0.8 environment isolation, then `[environment]` from `devbox.toml`,
+/// then prepends installed tool directories to `PATH`. Returns `Some(ExitCode)`
+/// on failure.
 fn prepare_runtime(runtime: &mut runtime::Runtime) -> Option<ExitCode> {
-    if let Some(config_path) = find_config() {
-        match Config::load(&config_path) {
-            Ok(config) => apply_environment(runtime, &config),
-            Err(err) => {
-                eprintln!("devbox: {err}");
-                return Some(ExitCode::FAILURE);
+    let ws = workspace::Workspace::discover().ok();
+
+    if let Some(ws) = &ws {
+        apply_isolation(runtime, ws);
+
+        if let Some(config_path) = find_config(ws) {
+            match Config::load(&config_path) {
+                Ok(config) => apply_environment(runtime, &config),
+                Err(err) => {
+                    eprintln!("devbox: {err}");
+                    return Some(ExitCode::FAILURE);
+                }
             }
         }
     }
 
-    if let Some(tool_dirs) = installed_tool_dirs() {
+    if let Some(tool_dirs) = installed_tool_dirs(ws.as_ref()) {
         let env = runtime.environment_mut();
         for dir in tool_dirs.iter().rev() {
             env.prepend_path(dir);
@@ -303,9 +310,29 @@ fn prepare_runtime(runtime: &mut runtime::Runtime) -> Option<ExitCode> {
     None
 }
 
+/// Points `HOME`, `TMP`, `NUGET_PACKAGES`, and `DOTNET_ROOT` into `.devbox`
+/// (v0.8). `DOTNET_ROOT` targets a registered `dotnet` tool when one exists.
+fn apply_isolation(runtime: &mut runtime::Runtime, ws: &workspace::Workspace) {
+    let mut isolation = runtime::Isolation::from_devbox(&ws.devbox_dir());
+    if let Some(tool) = installed_dotnet(ws) {
+        isolation.dotnet_root = tool.install_dir.clone();
+    }
+    for dir in [&isolation.home, &isolation.tmp, &isolation.nuget_packages] {
+        std::fs::create_dir_all(dir).ok();
+    }
+    isolation.apply(runtime.environment_mut());
+}
+
+/// The registered `dotnet` tool, if any.
+fn installed_dotnet(ws: &workspace::Workspace) -> Option<toolchain::Tool> {
+    let path = ws.tools_dir().join(toolchain::REGISTRY_FILE);
+    let registry = toolchain::ToolRegistry::load(&path).ok()?;
+    registry.get("dotnet").cloned()
+}
+
 /// Directories containing installed tool executables, highest priority first.
-fn installed_tool_dirs() -> Option<Vec<PathBuf>> {
-    let ws = workspace::Workspace::discover().ok()?;
+fn installed_tool_dirs(ws: Option<&workspace::Workspace>) -> Option<Vec<PathBuf>> {
+    let ws = ws?;
     let path = ws.tools_dir().join(toolchain::REGISTRY_FILE);
     let registry = toolchain::ToolRegistry::load(&path).ok()?;
     Some(registry.executable_dirs())
@@ -318,9 +345,8 @@ fn apply_environment(runtime: &mut runtime::Runtime, config: &Config) {
     }
 }
 
-fn find_config() -> Option<PathBuf> {
-    let root = workspace::Workspace::discover().ok()?.root().to_path_buf();
-    let path = root.join(config::FILE_NAME);
+fn find_config(ws: &workspace::Workspace) -> Option<PathBuf> {
+    let path = ws.root().join(config::FILE_NAME);
     path.is_file().then_some(path)
 }
 

@@ -15,8 +15,21 @@ Starts from the current process environment, then applies:
 - variable overrides (`set_var`, `unset_var`)
 - PATH injection (`prepend_path`, `append_path`)
 
-In version 0.1 the environment is inherited from the calling shell. Later
-versions point `HOME`, `TMP`, `DOTNET_ROOT`, and `PATH` into `.devbox/`.
+## Environment Isolation
+
+Version 0.8 isolates the standard developer variables into `.devbox/`:
+
+| Variable         | Points to                          |
+|------------------|------------------------------------|
+| `HOME`           | `.devbox/home/`                    |
+| `TMP` `TEMP`     | `.devbox/tmp/`                     |
+| `TMPDIR`         | `.devbox/tmp/`                     |
+| `NUGET_PACKAGES` | `.devbox/cache/nuget/packages/`    |
+| `DOTNET_ROOT`    | `.devbox/tools/dotnet/` (or a registered `dotnet` tool's install dir) |
+| `PATH`           | installed tool dirs (v0.6)         |
+
+Explicit variables in `[environment]` from `devbox.toml` override these
+defaults. The target directories are created on demand.
 
 ## Process spawning
 

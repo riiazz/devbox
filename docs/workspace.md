@@ -9,6 +9,7 @@ tree owned by DevBox. No downloads yet — only structure.
     └── .devbox/
         ├── workspace/
         ├── cache/
+        │   └── nuget/packages/
         ├── tools/
         ├── tmp/
         └── home/
@@ -25,7 +26,7 @@ running it again is a no-op.
 | Directory  | Purpose                            |
 |------------|------------------------------------|
 | `workspace`| project files DevBox manages       |
-| `cache`    | downloaded tool archives           |
+| `cache`    | downloaded tool archives, `nuget/packages` (v0.8) |
 | `tools`    | tool installs and `registry.toml`  |
 | `tmp`      | temporary files for processes      |
 | `home`     | isolated `HOME` (v0.8)             |

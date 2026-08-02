@@ -4,10 +4,12 @@
 
 ### `devbox exec <program> [args...]`
 
-Runs `<program>` inside the DevBox environment. Applies the
-`[environment]` section of `devbox.toml` if present, then prepends the
-executable directories of every registered tool to `PATH`, so installed tools
-resolve from `.devbox/tools` ahead of the system (v0.6).
+Runs `<program>` inside the DevBox environment. Isolates `HOME`, `TMP`,
+`NUGET_PACKAGES`, and `DOTNET_ROOT` into `.devbox` (v0.8), applies the
+`[environment]` section of `devbox.toml` if present (overriding the isolated
+defaults), then prepends the executable directories of every registered tool
+to `PATH`, so installed tools resolve from `.devbox/tools` ahead of the system
+(v0.6).
 
 Examples:
 
@@ -22,9 +24,10 @@ Exits with the exit code of the spawned program.
 ### `devbox shell`
 
 Opens an interactive shell inside the DevBox environment. Applies the same
-environment as `devbox exec` — `[environment]` from `devbox.toml` plus the
-installed tools on `PATH` — then spawns the user's shell (`$SHELL`, falling
-back to PowerShell on Windows and `bash` on Unix), waits for it to finish, and
+environment as `devbox exec` — isolated `HOME`/`TMP`/`NUGET_PACKAGES`/
+`DOTNET_ROOT` (v0.8), `[environment]` from `devbox.toml`, plus the installed
+tools on `PATH` — then spawns the user's shell (`$SHELL`, falling back to
+PowerShell on Windows and `bash` on Unix), waits for it to finish, and
 propagates its exit code. No system environment variables are modified; the
 environment lives only in the child process.
 

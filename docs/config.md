@@ -23,4 +23,6 @@ DOTNET_ENVIRONMENT = "Development"
 ### `[environment]`
 
 Arbitrary environment variables applied to every process spawned by
-`devbox exec`. Missing sections and keys fall back to defaults.
+`devbox exec`. Missing sections and keys fall back to defaults. Explicit
+variables override the v0.8 isolation defaults (e.g. `HOME`, `TMP`,
+`NUGET_PACKAGES`, `DOTNET_ROOT`) that otherwise point into `.devbox`.

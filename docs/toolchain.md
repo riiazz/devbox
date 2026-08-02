@@ -54,5 +54,5 @@ Version 0.5 added the downloader: `devbox install ripgrep` resolves, downloads,
 checksums, extracts, and registers — the final "Register" step lands in this
 registry. Version 0.6 completed: `devbox exec` uses `executable_dirs` to build
 the isolated `PATH`. Version 0.7 completed: `devbox shell` reuses the same
-environment. Version 0.8 isolates `HOME`, `TMP`, `DOTNET_ROOT`, and
-`NUGET_PACKAGES` into `.devbox`.
+environment. Version 0.8 completed: `HOME`, `TMP`, `DOTNET_ROOT`, and
+`NUGET_PACKAGES` are isolated into `.devbox`.
