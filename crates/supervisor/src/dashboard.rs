@@ -1,4 +1,4 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::File;
 use std::io::{self, IsTerminal, Read, Seek, SeekFrom, Write};
 use std::path::Path;
@@ -787,58 +787,132 @@ fn parse_cpu_time(s: &str) -> Option<u64> {
 }
 
 #[cfg(windows)]
-fn listening_endpoints(pids: &[u32]) -> HashMap<u32, Vec<String>> {
-    let mut out: HashMap<u32, Vec<String>> = HashMap::new();
-    if pids.is_empty() {
+fn listening_endpoints(roots: &[u32]) -> HashMap<u32, Vec<String>> {
+    let out: HashMap<u32, Vec<String>> = HashMap::new();
+    if roots.is_empty() {
         return out;
     }
-    let list = pids
-        .iter()
-        .map(|p| p.to_string())
-        .collect::<Vec<_>>()
-        .join(",");
-    let script = format!(
-        "Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Where-Object {{ $_.OwningProcess -in @({list}) }} | ForEach-Object {{ \"$($_.OwningProcess),$($_.LocalAddress):$($_.LocalPort)\" }}"
-    );
-    for line in run_powershell(&script).lines() {
+    let script = r#"
+Get-CimInstance Win32_Process | ForEach-Object { "P,$($_.ProcessId),$($_.ParentProcessId)" };
+Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | ForEach-Object { "L,$($_.OwningProcess),$($_.LocalAddress):$($_.LocalPort)" }
+"#;
+    let mut children: HashMap<u32, Vec<u32>> = HashMap::new();
+    let mut sockets: HashMap<u32, Vec<String>> = HashMap::new();
+    for line in run_powershell(script).lines() {
         let line = line.trim();
         if line.is_empty() {
             continue;
         }
-        let Some((pid, endpoint)) = line.split_once(',') else {
-            continue;
-        };
-        let Ok(pid) = pid.trim().parse::<u32>() else {
-            continue;
-        };
-        out.entry(pid).or_default().push(format_endpoint(endpoint));
+        let mut parts = line.splitn(3, ',');
+        match parts.next() {
+            Some("P") => {
+                let pid = parts.next().and_then(|s| s.trim().parse::<u32>().ok());
+                let ppid = parts.next().and_then(|s| s.trim().parse::<u32>().ok());
+                if let (Some(pid), Some(ppid)) = (pid, ppid) {
+                    children.entry(ppid).or_default().push(pid);
+                }
+            }
+            Some("L") => {
+                let pid = parts.next().and_then(|s| s.trim().parse::<u32>().ok());
+                let endpoint = parts.next();
+                if let (Some(pid), Some(endpoint)) = (pid, endpoint) {
+                    sockets
+                        .entry(pid)
+                        .or_default()
+                        .push(format_endpoint(endpoint.trim()));
+                }
+            }
+            _ => {}
+        }
     }
-    out
+    endpoints_for_descendants(roots, &children, &sockets)
 }
 
 #[cfg(unix)]
-fn listening_endpoints(pids: &[u32]) -> HashMap<u32, Vec<String>> {
-    let mut out: HashMap<u32, Vec<String>> = HashMap::new();
-    if pids.is_empty() {
+fn listening_endpoints(roots: &[u32]) -> HashMap<u32, Vec<String>> {
+    let out: HashMap<u32, Vec<String>> = HashMap::new();
+    if roots.is_empty() {
         return out;
+    }
+    let Ok(tree) = Command::new("ps").args(["-eo", "pid=,ppid="]).output() else {
+        return out;
+    };
+    let mut children: HashMap<u32, Vec<u32>> = HashMap::new();
+    for line in String::from_utf8_lossy(&tree.stdout).lines() {
+        let mut fields = line.split_whitespace();
+        let pid = fields.next().and_then(|s| s.parse::<u32>().ok());
+        let ppid = fields.next().and_then(|s| s.parse::<u32>().ok());
+        if let (Some(pid), Some(ppid)) = (pid, ppid) {
+            children.entry(ppid).or_default().push(pid);
+        }
     }
     let Ok(output) = Command::new("ss").args(["-H", "-tlnp"]).output() else {
         return out;
     };
+    let mut sockets: HashMap<u32, Vec<String>> = HashMap::new();
     for line in String::from_utf8_lossy(&output.stdout).lines() {
-        let Some(pid) = pids
-            .iter()
-            .copied()
-            .find(|p| line.contains(&format!("pid={p},")))
-        else {
+        let cols: Vec<&str> = line.split_whitespace().collect();
+        let Some(local) = cols.get(3) else {
             continue;
         };
-        let cols: Vec<&str> = line.split_whitespace().collect();
-        if let Some(local) = cols.get(3) {
-            out.entry(pid).or_default().push(format_endpoint(local));
+        for pid in parse_ss_pids(line) {
+            sockets
+                .entry(pid)
+                .or_default()
+                .push(format_endpoint(local));
+        }
+    }
+    endpoints_for_descendants(roots, &children, &sockets)
+}
+
+/// Collects the listening endpoints owned by each root PID or any of its
+/// descendants. Services such as `dotnet run` launch the process that actually
+/// binds the port as a child, so scanning only the direct PID would miss it.
+fn endpoints_for_descendants(
+    roots: &[u32],
+    children: &HashMap<u32, Vec<u32>>,
+    sockets: &HashMap<u32, Vec<String>>,
+) -> HashMap<u32, Vec<String>> {
+    let mut out: HashMap<u32, Vec<String>> = HashMap::new();
+    for &root in roots {
+        let mut stack = vec![root];
+        let mut seen = HashSet::from([root]);
+        let mut endpoints: Vec<String> = Vec::new();
+        while let Some(pid) = stack.pop() {
+            if let Some(owned) = sockets.get(&pid) {
+                endpoints.extend(owned.iter().cloned());
+            }
+            if let Some(kids) = children.get(&pid) {
+                for &kid in kids {
+                    if seen.insert(kid) {
+                        stack.push(kid);
+                    }
+                }
+            }
+        }
+        endpoints.sort_unstable();
+        endpoints.dedup();
+        if !endpoints.is_empty() {
+            out.insert(root, endpoints);
         }
     }
     out
+}
+
+/// Extracts every `pid=` value from an `ss -tlnp` `users:` payload, which can
+/// list multiple owning processes per socket.
+#[cfg(unix)]
+fn parse_ss_pids(line: &str) -> Vec<u32> {
+    line.split("pid=")
+        .skip(1)
+        .filter_map(|rest| {
+            let digits: String = rest
+                .chars()
+                .take_while(|c| c.is_ascii_digit())
+                .collect();
+            digits.parse::<u32>().ok()
+        })
+        .collect()
 }
 
 #[cfg(windows)]
@@ -1036,6 +1110,34 @@ mod tests {
         assert_eq!(format_endpoint("127.0.0.1:2009"), "localhost:2009");
         assert_eq!(format_endpoint("0.0.0.0:80"), "*:80");
         assert_eq!(format_endpoint("10.0.0.5:4041"), "10.0.0.5:4041");
+    }
+
+    #[test]
+    fn endpoints_include_descendant_ports() {
+        let children = HashMap::from([
+            (100u32, vec![200u32]),
+            (200u32, vec![300u32]),
+            (400u32, vec![]),
+        ]);
+        let sockets = HashMap::from([
+            (200u32, vec!["localhost:5000".to_string()]),
+            (300u32, vec!["*:5001".to_string()]),
+            (500u32, vec!["localhost:9999".to_string()]),
+        ]);
+        let out = endpoints_for_descendants(&[100, 400], &children, &sockets);
+
+        let root = out.get(&100).expect("root has endpoints");
+        assert_eq!(root, &["*:5001", "localhost:5000"]);
+        assert!(!out.contains_key(&400), "leaf with no ports is not reported");
+        assert!(!out.contains_key(&500));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn parse_ss_pids_extracts_all_owners() {
+        let line = "LISTEN 0 4096 127.0.0.1:8080 users:((\"dotnet\",pid=123,fd=5),(\"dotnet\",pid=456,fd=6))";
+        assert_eq!(parse_ss_pids(line), vec![123, 456]);
+        assert!(parse_ss_pids("LISTEN 0 4096 127.0.0.1:8080").is_empty());
     }
 }
 
