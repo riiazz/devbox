@@ -7,12 +7,12 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
+use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
-use ratatui::layout::{Constraint, Layout};
+use ratatui::layout::{Alignment, Constraint, Layout};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Cell, Paragraph, Row, Table};
-use ratatui::Terminal;
 
 use crate::{Process, SupervisorError};
 
@@ -52,13 +52,50 @@ struct Metrics {
     memory_bytes: Option<u64>,
 }
 
+/// How often listening endpoints are re-queried. Process CPU/memory are sampled
+/// every tick (they need fresh deltas), but TCP listen state changes slowly, so
+/// the (more expensive) scan is throttled.
+const LISTEN_SCAN_INTERVAL: Duration = Duration::from_secs(5);
+
+/// Per-service accent color, cycled by index so a service keeps the same color
+/// across the table row and its log panel.
+fn service_color(index: usize) -> Color {
+    const PALETTE: [Color; 6] = [
+        Color::Yellow,
+        Color::Magenta,
+        Color::Blue,
+        Color::Green,
+        Color::Cyan,
+        Color::Red,
+    ];
+    PALETTE[index % PALETTE.len()]
+}
+
+fn format_uptime(elapsed: Duration) -> String {
+    let secs = elapsed.as_secs();
+    if secs >= 3600 {
+        format!("{}h {}m", secs / 3600, (secs % 3600) / 60)
+    } else if secs >= 60 {
+        format!("{}m {}s", secs / 60, secs % 60)
+    } else {
+        format!("{secs}s")
+    }
+}
+
 /// Runs the live dashboard until every service exits or the stop flag is
 /// raised. When stdout is a terminal the screen is redrawn in place once per
 /// `refresh` interval via ratatui; otherwise a plain, appended summary is
 /// printed so output stays useful when piped or captured.
 pub fn run(children: &mut [(Process, Child)], opts: &Options) -> Result<Exit, SupervisorError> {
+    if children.is_empty() {
+        return Ok(Exit::AllExited);
+    }
     let log_order: Vec<String> = if opts.watch.is_empty() {
-        children.iter().take(5).map(|(p, _)| p.name.clone()).collect()
+        children
+            .iter()
+            .take(5)
+            .map(|(p, _)| p.name.clone())
+            .collect()
     } else {
         opts.watch.to_vec()
     };
@@ -86,6 +123,10 @@ pub fn run(children: &mut [(Process, Child)], opts: &Options) -> Result<Exit, Su
     let mut exited: HashMap<String, i32> = HashMap::new();
     let mut interrupted = false;
     let mut wait_err: Option<SupervisorError> = None;
+    let started = Instant::now();
+
+    let mut listening_cache: HashMap<u32, Vec<String>> = HashMap::new();
+    let mut last_listen_scan = Instant::now() - LISTEN_SCAN_INTERVAL;
 
     'tick: loop {
         if opts.stop.load(Ordering::SeqCst) || (interactive && ctrl_c_pressed()) {
@@ -124,8 +165,18 @@ pub fn run(children: &mut [(Process, Child)], opts: &Options) -> Result<Exit, Su
             .map(|(p, _)| p.pid)
             .collect();
         let samples = sample_processes(&running_pids);
-        let listening = listening_endpoints(&running_pids);
+        let listening = if last_listen_scan.elapsed() >= LISTEN_SCAN_INTERVAL {
+            last_listen_scan = Instant::now();
+            listening_cache = listening_endpoints(&running_pids);
+            &listening_cache
+        } else {
+            listening_cache.retain(|pid, _| running_pids.contains(pid));
+            &listening_cache
+        };
 
+        let cores = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1) as f64;
         let mut metrics: HashMap<u32, Metrics> = HashMap::new();
         for (process, _) in children.iter() {
             if exited.contains_key(&process.name) {
@@ -139,9 +190,6 @@ pub fn run(children: &mut [(Process, Child)], opts: &Options) -> Result<Exit, Su
                             if wall.as_nanos() == 0 {
                                 None
                             } else {
-                                let cores = std::thread::available_parallelism()
-                                    .map(|n| n.get())
-                                    .unwrap_or(1) as f64;
                                 Some(
                                     (cur.cpu_time_ns - prev.cpu_time_ns) as f64
                                         / wall.as_nanos() as f64
@@ -169,8 +217,10 @@ pub fn run(children: &mut [(Process, Child)], opts: &Options) -> Result<Exit, Su
         }
 
         match &mut terminal {
-            Some(term) => render_tui(term, children, &exited, &metrics, &listening, &tails),
-            None => render_plain(children, &exited, &metrics, &listening, &tails),
+            Some(term) => render_tui(
+                term, children, &exited, &metrics, listening, &tails, started,
+            ),
+            None => render_plain(children, &exited, &metrics, listening, &tails, started),
         }
 
         let all_done = children.iter().all(|(p, _)| exited.contains_key(&p.name));
@@ -186,7 +236,7 @@ pub fn run(children: &mut [(Process, Child)], opts: &Options) -> Result<Exit, Su
         return Err(err);
     }
     if interrupted {
-        println!("devbox: received interrupt, stopping services");
+        println!("\rdevbox: received interrupt, stopping services\n");
         return Ok(Exit::Interrupted);
     }
     Ok(Exit::AllExited)
@@ -217,9 +267,7 @@ fn restore(terminal: Option<&UiTerminal>) {
 /// mode the terminal no longer turns Ctrl+C into a signal, so it must be
 /// consumed as an ordinary key event.
 fn ctrl_c_pressed() -> bool {
-    use ratatui::crossterm::event::{
-        self, Event, KeyCode, KeyEventKind, KeyModifiers,
-    };
+    use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
     loop {
         match event::poll(Duration::ZERO) {
             Ok(true) => match event::read() {
@@ -244,6 +292,7 @@ struct ServiceRow {
     name: String,
     status: String,
     running: bool,
+    exit_code: Option<i32>,
     pid: u32,
     parent_pid: u32,
     cpu: String,
@@ -261,7 +310,12 @@ fn service_rows(
         .iter()
         .map(|(process, _)| {
             let running = !exited.contains_key(&process.name);
-            let status = match exited.get(&process.name) {
+            let exit_code = if running {
+                None
+            } else {
+                exited.get(&process.name).copied()
+            };
+            let status = match exit_code {
                 Some(code) => format!("exited ({code})"),
                 None => "running".to_string(),
             };
@@ -282,6 +336,7 @@ fn service_rows(
                 name: process.name.clone(),
                 status,
                 running,
+                exit_code,
                 pid: process.pid,
                 parent_pid: process.parent_pid,
                 cpu,
@@ -310,7 +365,7 @@ fn table_headers() -> Vec<String> {
 fn table_widths(headers: &[String], rows: &[ServiceRow]) -> Vec<Constraint> {
     let mut w: Vec<usize> = headers.iter().map(|h| h.len()).collect();
     for r in rows {
-        if w.len() > 0 {
+        if !w.is_empty() {
             w[0] = w[0].max(r.name.len());
         }
         if w.len() > 1 {
@@ -332,7 +387,64 @@ fn table_widths(headers: &[String], rows: &[ServiceRow]) -> Vec<Constraint> {
             w[6] = w[6].max(r.listening.len());
         }
     }
-    w.iter().map(|&len| Constraint::Length((len.min(32) as u16) + 2)).collect()
+    let mut constraints: Vec<Constraint> = w
+        .iter()
+        .map(|&len| Constraint::Length((len.min(32) as u16) + 2))
+        .collect();
+    if let Some(last) = constraints.last_mut() {
+        *last = Constraint::Fill(1);
+    }
+    constraints
+}
+
+fn is_numeric_col(index: usize) -> bool {
+    matches!(index, 2..=5)
+}
+
+fn align_cell(content: String, right: bool) -> Cell<'static> {
+    if right {
+        Cell::from(Line::from(content).alignment(Alignment::Right))
+    } else {
+        Cell::from(content)
+    }
+}
+
+fn build_title(
+    width: u16,
+    pid: u32,
+    running: usize,
+    exited: usize,
+    started: Instant,
+) -> Line<'static> {
+    let mut spans = vec![
+        Span::styled(
+            " devbox up ",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(format!("pid {pid}"), Style::default().fg(Color::DarkGray)),
+    ];
+    let count_text = format!("  {running} running  {exited} exited");
+    let count_color = if exited == 0 {
+        Color::Green
+    } else {
+        Color::Yellow
+    };
+    spans.push(Span::styled(count_text, Style::default().fg(count_color)));
+    spans.push(Span::styled(
+        format!("  up {}", format_uptime(started.elapsed())),
+        Style::default().fg(Color::DarkGray),
+    ));
+
+    let hint = "  [Ctrl+C] stop ";
+    let used: usize = spans.iter().map(|s| s.content.len()).sum();
+    let pad = (width as usize).saturating_sub(used + hint.len());
+    if pad > 0 {
+        spans.push(Span::raw(" ".repeat(pad)));
+    }
+    spans.push(Span::styled(hint, Style::default().fg(Color::DarkGray)));
+    Line::from(spans)
 }
 
 fn render_tui(
@@ -342,6 +454,7 @@ fn render_tui(
     metrics: &HashMap<u32, Metrics>,
     listening: &HashMap<u32, Vec<String>>,
     tails: &[(String, LogTail)],
+    started: Instant,
 ) {
     let headers = table_headers();
     let rows = service_rows(children, exited, metrics, listening);
@@ -352,31 +465,30 @@ fn render_tui(
 
     let _ = terminal.draw(|f| {
         let area = f.area();
+        let table_height = (rows.len() as u16 + 4)
+            .min(40)
+            .min(area.height.saturating_sub(2));
         let areas = Layout::vertical([
             Constraint::Length(1),
-            Constraint::Length(rows.len() as u16 + 4),
+            Constraint::Length(table_height),
             Constraint::Min(1),
         ])
         .split(area);
         let (title_area, table_area, logs_area) = (areas[0], areas[1], areas[2]);
 
-        let title = Line::from(vec![
-            Span::styled(" devbox up ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-            Span::styled(format!("pid {pid}"), Style::default().fg(Color::DarkGray)),
-            Span::styled(
-                format!("  {running_count} running  {exited_count} exited"),
-                Style::default().fg(if exited_count == 0 { Color::Green } else { Color::Yellow }),
-            ),
-            Span::styled("   [Ctrl+C] stop", Style::default().fg(Color::DarkGray)),
-        ]);
+        let title = build_title(area.width, pid, running_count, exited_count, started);
         f.render_widget(Paragraph::new(title), title_area);
 
         let header_row = Row::new(
             headers
                 .iter()
-                .map(|h| {
-                    Cell::from(h.clone())
-                        .style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
+                .enumerate()
+                .map(|(i, h)| {
+                    align_cell(h.clone(), is_numeric_col(i)).style(
+                        Style::default()
+                            .fg(Color::Cyan)
+                            .add_modifier(Modifier::BOLD),
+                    )
                 })
                 .collect::<Vec<_>>(),
         )
@@ -384,19 +496,29 @@ fn render_tui(
 
         let body: Vec<Row> = rows
             .iter()
-            .map(|r| {
+            .enumerate()
+            .map(|(i, r)| {
                 let status_style = if r.running {
-                    Style::default().fg(Color::Green)
+                    Style::default()
+                        .fg(Color::Green)
+                        .add_modifier(Modifier::BOLD)
+                } else if r.exit_code == Some(0) {
+                    Style::default().fg(Color::Yellow)
                 } else {
                     Style::default().fg(Color::Red)
                 };
                 Row::new(vec![
-                    Cell::from(r.name.clone()).style(Style::default().add_modifier(Modifier::BOLD)),
+                    Cell::from(r.name.clone()).style(
+                        Style::default()
+                            .fg(service_color(i))
+                            .add_modifier(Modifier::BOLD),
+                    ),
                     Cell::from(r.status.clone()).style(status_style),
-                    Cell::from(r.pid.to_string()).style(Style::default().fg(Color::DarkGray)),
-                    Cell::from(r.parent_pid.to_string()).style(Style::default().fg(Color::DarkGray)),
-                    Cell::from(r.cpu.clone()).style(Style::default().fg(Color::Magenta)),
-                    Cell::from(r.memory.clone()).style(if r.memory.is_empty() {
+                    align_cell(r.pid.to_string(), true).style(Style::default().fg(Color::DarkGray)),
+                    align_cell(r.parent_pid.to_string(), true)
+                        .style(Style::default().fg(Color::DarkGray)),
+                    align_cell(r.cpu.clone(), true).style(Style::default().fg(Color::Magenta)),
+                    align_cell(r.memory.clone(), true).style(if r.memory.is_empty() {
                         Style::default()
                     } else {
                         Style::default().fg(Color::Magenta)
@@ -412,7 +534,7 @@ fn render_tui(
             .column_spacing(2);
         f.render_widget(table, table_area);
 
-        if tails.is_empty() {
+        if tails.is_empty() || logs_area.height < 2 {
             return;
         }
         let chunks = Layout::vertical(
@@ -422,15 +544,36 @@ fn render_tui(
                 .collect::<Vec<_>>(),
         )
         .split(logs_area);
-        for ((name, tail), chunk) in tails.iter().zip(chunks.iter()) {
+        for ((i, (name, tail)), chunk) in tails.iter().enumerate().zip(chunks.iter()) {
+            let color = service_color(i);
             let block = Block::default()
-                .border_style(Style::default().fg(Color::DarkGray))
+                .border_style(Style::default().fg(color))
                 .title(format!(" {name} "));
+            if tail.render().next().is_none() {
+                f.render_widget(
+                    Paragraph::new(
+                        Line::from(" waiting for output...")
+                            .style(Style::default().fg(Color::DarkGray)),
+                    )
+                    .block(block),
+                    *chunk,
+                );
+                continue;
+            }
             let lines: Vec<Line> = tail.render().map(Line::from).collect();
             let text = Text::from(lines);
             let visible = chunk.height.saturating_sub(2).max(1);
-            let scroll = text.lines.len().saturating_sub(visible as usize) as u16;
-            f.render_widget(Paragraph::new(text).block(block).scroll((scroll, 0)), *chunk);
+            let content_width = chunk.width.saturating_sub(2).max(1) as usize;
+            let total_rows: usize = text
+                .lines
+                .iter()
+                .map(|line| line.width().div_ceil(content_width).max(1))
+                .sum();
+            let scroll = total_rows.saturating_sub(visible as usize) as u16;
+            f.render_widget(
+                Paragraph::new(text).block(block).scroll((scroll, 0)),
+                *chunk,
+            );
         }
     });
 }
@@ -441,9 +584,13 @@ fn render_plain(
     metrics: &HashMap<u32, Metrics>,
     listening: &HashMap<u32, Vec<String>>,
     tails: &[(String, LogTail)],
+    started: Instant,
 ) {
     println!();
-    println!("--- devbox dashboard ---");
+    println!(
+        "--- devbox dashboard (up {}) ---",
+        format_uptime(started.elapsed())
+    );
     println!("devbox running with pid: {}", std::process::id());
     println!();
 
@@ -522,13 +669,13 @@ fn format_bytes(bytes: u64) -> String {
     const MB: u64 = KB * 1024;
     const GB: u64 = MB * 1024;
     if bytes >= GB {
-        format!("{:.1}gb", bytes as f64 / GB as f64)
+        format!("{:.1}GB", bytes as f64 / GB as f64)
     } else if bytes >= MB {
-        format!("{:.1}mb", bytes as f64 / MB as f64)
+        format!("{:.1}MB", bytes as f64 / MB as f64)
     } else if bytes >= KB {
-        format!("{:.0}kb", bytes as f64 / KB as f64)
+        format!("{:.0}KB", bytes as f64 / KB as f64)
     } else {
-        format!("{bytes}b")
+        format!("{bytes}B")
     }
 }
 
@@ -590,7 +737,11 @@ fn sample_processes(pids: &[u32]) -> HashMap<u32, ProcessSample> {
     if pids.is_empty() {
         return out;
     }
-    let list = pids.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(",");
+    let list = pids
+        .iter()
+        .map(|p| p.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
     let Ok(output) = Command::new("ps")
         .args(["-o", "pid=,time=,rss=", "-p", &list])
         .output()
@@ -624,7 +775,10 @@ fn sample_processes(pids: &[u32]) -> HashMap<u32, ProcessSample> {
 
 #[cfg(unix)]
 fn parse_cpu_time(s: &str) -> Option<u64> {
-    let parts: Vec<u64> = s.split(':').map(|p| p.parse().ok()).collect::<Option<Vec<u64>>>()?;
+    let parts: Vec<u64> = s
+        .split(':')
+        .map(|p| p.parse().ok())
+        .collect::<Option<Vec<u64>>>()?;
     match parts.as_slice() {
         [min, sec] => Some(min * 60 + sec),
         [hr, min, sec] => Some(hr * 3600 + min * 60 + sec),
@@ -638,7 +792,11 @@ fn listening_endpoints(pids: &[u32]) -> HashMap<u32, Vec<String>> {
     if pids.is_empty() {
         return out;
     }
-    let list = pids.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(",");
+    let list = pids
+        .iter()
+        .map(|p| p.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
     let script = format!(
         "Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Where-Object {{ $_.OwningProcess -in @({list}) }} | ForEach-Object {{ \"$($_.OwningProcess),$($_.LocalAddress):$($_.LocalPort)\" }}"
     );
@@ -668,7 +826,11 @@ fn listening_endpoints(pids: &[u32]) -> HashMap<u32, Vec<String>> {
         return out;
     };
     for line in String::from_utf8_lossy(&output.stdout).lines() {
-        let Some(pid) = pids.iter().copied().find(|p| line.contains(&format!("pid={p},"))) else {
+        let Some(pid) = pids
+            .iter()
+            .copied()
+            .find(|p| line.contains(&format!("pid={p},")))
+        else {
             continue;
         };
         let cols: Vec<&str> = line.split_whitespace().collect();
@@ -863,10 +1025,10 @@ mod tests {
 
     #[test]
     fn format_bytes_human_readable() {
-        assert_eq!(format_bytes(0), "0b");
-        assert_eq!(format_bytes(2048), "2kb");
-        assert_eq!(format_bytes(3 * 1024 * 1024), "3.0mb");
-        assert_eq!(format_bytes(2 * 1024 * 1024 * 1024), "2.0gb");
+        assert_eq!(format_bytes(0), "0B");
+        assert_eq!(format_bytes(2048), "2KB");
+        assert_eq!(format_bytes(3 * 1024 * 1024), "3.0MB");
+        assert_eq!(format_bytes(2 * 1024 * 1024 * 1024), "2.0GB");
     }
 
     #[test]
@@ -876,3 +1038,4 @@ mod tests {
         assert_eq!(format_endpoint("10.0.0.5:4041"), "10.0.0.5:4041");
     }
 }
+
