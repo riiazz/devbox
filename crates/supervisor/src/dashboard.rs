@@ -7,6 +7,13 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
+use ratatui::backend::CrosstermBackend;
+use ratatui::layout::{Constraint, Layout};
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::{Line, Span, Text};
+use ratatui::widgets::{Block, Cell, Paragraph, Row, Table};
+use ratatui::Terminal;
+
 use crate::{Process, SupervisorError};
 
 /// Options controlling the live `devbox up` dashboard.
@@ -46,7 +53,9 @@ struct Metrics {
 }
 
 /// Runs the live dashboard until every service exits or the stop flag is
-/// raised. The screen is redrawn once per `refresh` interval.
+/// raised. When stdout is a terminal the screen is redrawn in place once per
+/// `refresh` interval via ratatui; otherwise a plain, appended summary is
+/// printed so output stays useful when piped or captured.
 pub fn run(children: &mut [(Process, Child)], opts: &Options) -> Result<Exit, SupervisorError> {
     let log_order: Vec<String> = if opts.watch.is_empty() {
         children.iter().take(5).map(|(p, _)| p.name.clone()).collect()
@@ -58,13 +67,30 @@ pub fn run(children: &mut [(Process, Child)], opts: &Options) -> Result<Exit, Su
         .map(|name| (name, LogTail::new(opts.log_lines.max(1))))
         .collect();
 
+    let mut terminal = if io::stdout().is_terminal() {
+        match init_terminal() {
+            Ok(term) => Some(term),
+            Err(source) => {
+                eprintln!(
+                    "devbox: failed to start the live dashboard; falling back to plain output: {source}"
+                );
+                None
+            }
+        }
+    } else {
+        None
+    };
+    let interactive = terminal.is_some();
+
     let mut prev_samples: HashMap<u32, (ProcessSample, Instant)> = HashMap::new();
     let mut exited: HashMap<String, i32> = HashMap::new();
+    let mut interrupted = false;
+    let mut wait_err: Option<SupervisorError> = None;
 
-    loop {
-        if opts.stop.load(Ordering::SeqCst) {
-            println!("devbox: received interrupt, stopping services");
-            return Ok(Exit::Interrupted);
+    'tick: loop {
+        if opts.stop.load(Ordering::SeqCst) || (interactive && ctrl_c_pressed()) {
+            interrupted = true;
+            break;
         }
 
         for (process, child) in children.iter_mut() {
@@ -77,10 +103,11 @@ pub fn run(children: &mut [(Process, Child)], opts: &Options) -> Result<Exit, Su
                 }
                 Ok(None) => {}
                 Err(source) => {
-                    return Err(SupervisorError::Wait {
+                    wait_err = Some(SupervisorError::Wait {
                         name: process.name.clone(),
                         source,
                     });
+                    break 'tick;
                 }
             }
         }
@@ -141,34 +168,132 @@ pub fn run(children: &mut [(Process, Child)], opts: &Options) -> Result<Exit, Su
             prev_samples.insert(*pid, (sample.clone(), Instant::now()));
         }
 
-        render(children, &exited, &metrics, &listening, &tails);
+        match &mut terminal {
+            Some(term) => render_tui(term, children, &exited, &metrics, &listening, &tails),
+            None => render_plain(children, &exited, &metrics, &listening, &tails),
+        }
 
         let all_done = children.iter().all(|(p, _)| exited.contains_key(&p.name));
         if all_done {
-            return Ok(Exit::AllExited);
+            break;
         }
         std::thread::sleep(opts.refresh);
     }
+
+    restore(terminal.as_ref());
+
+    if let Some(err) = wait_err {
+        return Err(err);
+    }
+    if interrupted {
+        println!("devbox: received interrupt, stopping services");
+        return Ok(Exit::Interrupted);
+    }
+    Ok(Exit::AllExited)
 }
 
-fn render(
+type UiTerminal = Terminal<CrosstermBackend<io::Stdout>>;
+
+fn init_terminal() -> io::Result<UiTerminal> {
+    ratatui::crossterm::terminal::enable_raw_mode()?;
+    let backend = CrosstermBackend::new(io::stdout());
+    let mut terminal = Terminal::new(backend)?;
+    terminal.clear()?;
+    Ok(terminal)
+}
+
+fn restore(terminal: Option<&UiTerminal>) {
+    if terminal.is_some() {
+        let _ = ratatui::crossterm::terminal::disable_raw_mode();
+        let _ = ratatui::crossterm::execute!(
+            io::stdout(),
+            ratatui::crossterm::cursor::Show,
+            ratatui::crossterm::terminal::Clear(ratatui::crossterm::terminal::ClearType::All)
+        );
+    }
+}
+
+/// Returns true once a Ctrl+C key press is seen in the input queue. In raw
+/// mode the terminal no longer turns Ctrl+C into a signal, so it must be
+/// consumed as an ordinary key event.
+fn ctrl_c_pressed() -> bool {
+    use ratatui::crossterm::event::{
+        self, Event, KeyCode, KeyEventKind, KeyModifiers,
+    };
+    loop {
+        match event::poll(Duration::ZERO) {
+            Ok(true) => match event::read() {
+                Ok(Event::Key(key)) => {
+                    if key.kind == KeyEventKind::Press
+                        && key.modifiers.contains(KeyModifiers::CONTROL)
+                        && matches!(key.code, KeyCode::Char('c') | KeyCode::Char('C'))
+                    {
+                        return true;
+                    }
+                }
+                Ok(_) => {}
+                Err(_) => return false,
+            },
+            _ => return false,
+        }
+    }
+}
+
+/// One row of the services table, shared by the TUI and plain renderers.
+struct ServiceRow {
+    name: String,
+    status: String,
+    running: bool,
+    pid: u32,
+    parent_pid: u32,
+    cpu: String,
+    memory: String,
+    listening: String,
+}
+
+fn service_rows(
     children: &[(Process, Child)],
     exited: &HashMap<String, i32>,
     metrics: &HashMap<u32, Metrics>,
     listening: &HashMap<u32, Vec<String>>,
-    tails: &[(String, LogTail)],
-) {
-    if io::stdout().is_terminal() {
-        clear_screen();
-    } else {
-        println!();
-        println!("--- devbox dashboard ---");
-    }
+) -> Vec<ServiceRow> {
+    children
+        .iter()
+        .map(|(process, _)| {
+            let running = !exited.contains_key(&process.name);
+            let status = match exited.get(&process.name) {
+                Some(code) => format!("exited ({code})"),
+                None => "running".to_string(),
+            };
+            let m = metrics.get(&process.pid);
+            let cpu = m
+                .and_then(|m| m.cpu_percent)
+                .map(|v| format!("{v:.0}%"))
+                .unwrap_or_default();
+            let memory = m
+                .and_then(|m| m.memory_bytes)
+                .map(format_bytes)
+                .unwrap_or_default();
+            let listening = listening
+                .get(&process.pid)
+                .map(|e| e.join(" "))
+                .unwrap_or_default();
+            ServiceRow {
+                name: process.name.clone(),
+                status,
+                running,
+                pid: process.pid,
+                parent_pid: process.parent_pid,
+                cpu,
+                memory,
+                listening,
+            }
+        })
+        .collect()
+}
 
-    println!("devbox running with pid: {}", std::process::id());
-    println!();
-
-    let headers: Vec<String> = [
+fn table_headers() -> Vec<String> {
+    [
         "service",
         "status",
         "pid",
@@ -179,31 +304,160 @@ fn render(
     ]
     .iter()
     .map(|s| s.to_string())
-    .collect();
+    .collect()
+}
+
+fn table_widths(headers: &[String], rows: &[ServiceRow]) -> Vec<Constraint> {
+    let mut w: Vec<usize> = headers.iter().map(|h| h.len()).collect();
+    for r in rows {
+        if w.len() > 0 {
+            w[0] = w[0].max(r.name.len());
+        }
+        if w.len() > 1 {
+            w[1] = w[1].max(r.status.len());
+        }
+        if w.len() > 2 {
+            w[2] = w[2].max(r.pid.to_string().len());
+        }
+        if w.len() > 3 {
+            w[3] = w[3].max(r.parent_pid.to_string().len());
+        }
+        if w.len() > 4 {
+            w[4] = w[4].max(r.cpu.len());
+        }
+        if w.len() > 5 {
+            w[5] = w[5].max(r.memory.len());
+        }
+        if w.len() > 6 {
+            w[6] = w[6].max(r.listening.len());
+        }
+    }
+    w.iter().map(|&len| Constraint::Length((len.min(32) as u16) + 2)).collect()
+}
+
+fn render_tui(
+    terminal: &mut UiTerminal,
+    children: &[(Process, Child)],
+    exited: &HashMap<String, i32>,
+    metrics: &HashMap<u32, Metrics>,
+    listening: &HashMap<u32, Vec<String>>,
+    tails: &[(String, LogTail)],
+) {
+    let headers = table_headers();
+    let rows = service_rows(children, exited, metrics, listening);
+    let width_constraints = table_widths(&headers, &rows);
+    let running_count = rows.iter().filter(|r| r.running).count();
+    let exited_count = rows.len() - running_count;
+    let pid = std::process::id();
+
+    let _ = terminal.draw(|f| {
+        let area = f.area();
+        let areas = Layout::vertical([
+            Constraint::Length(1),
+            Constraint::Length(rows.len() as u16 + 4),
+            Constraint::Min(1),
+        ])
+        .split(area);
+        let (title_area, table_area, logs_area) = (areas[0], areas[1], areas[2]);
+
+        let title = Line::from(vec![
+            Span::styled(" devbox up ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+            Span::styled(format!("pid {pid}"), Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                format!("  {running_count} running  {exited_count} exited"),
+                Style::default().fg(if exited_count == 0 { Color::Green } else { Color::Yellow }),
+            ),
+            Span::styled("   [Ctrl+C] stop", Style::default().fg(Color::DarkGray)),
+        ]);
+        f.render_widget(Paragraph::new(title), title_area);
+
+        let header_row = Row::new(
+            headers
+                .iter()
+                .map(|h| {
+                    Cell::from(h.clone())
+                        .style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
+                })
+                .collect::<Vec<_>>(),
+        )
+        .bottom_margin(1);
+
+        let body: Vec<Row> = rows
+            .iter()
+            .map(|r| {
+                let status_style = if r.running {
+                    Style::default().fg(Color::Green)
+                } else {
+                    Style::default().fg(Color::Red)
+                };
+                Row::new(vec![
+                    Cell::from(r.name.clone()).style(Style::default().add_modifier(Modifier::BOLD)),
+                    Cell::from(r.status.clone()).style(status_style),
+                    Cell::from(r.pid.to_string()).style(Style::default().fg(Color::DarkGray)),
+                    Cell::from(r.parent_pid.to_string()).style(Style::default().fg(Color::DarkGray)),
+                    Cell::from(r.cpu.clone()).style(Style::default().fg(Color::Magenta)),
+                    Cell::from(r.memory.clone()).style(if r.memory.is_empty() {
+                        Style::default()
+                    } else {
+                        Style::default().fg(Color::Magenta)
+                    }),
+                    Cell::from(r.listening.clone()).style(Style::default().fg(Color::Blue)),
+                ])
+            })
+            .collect();
+
+        let table = Table::new(body, width_constraints)
+            .header(header_row)
+            .block(Block::bordered().title(" services "))
+            .column_spacing(2);
+        f.render_widget(table, table_area);
+
+        if tails.is_empty() {
+            return;
+        }
+        let chunks = Layout::vertical(
+            tails
+                .iter()
+                .map(|_| Constraint::Ratio(1, tails.len() as u32))
+                .collect::<Vec<_>>(),
+        )
+        .split(logs_area);
+        for ((name, tail), chunk) in tails.iter().zip(chunks.iter()) {
+            let block = Block::default()
+                .border_style(Style::default().fg(Color::DarkGray))
+                .title(format!(" {name} "));
+            let lines: Vec<Line> = tail.render().map(Line::from).collect();
+            let text = Text::from(lines);
+            let visible = chunk.height.saturating_sub(2).max(1);
+            let scroll = text.lines.len().saturating_sub(visible as usize) as u16;
+            f.render_widget(Paragraph::new(text).block(block).scroll((scroll, 0)), *chunk);
+        }
+    });
+}
+
+fn render_plain(
+    children: &[(Process, Child)],
+    exited: &HashMap<String, i32>,
+    metrics: &HashMap<u32, Metrics>,
+    listening: &HashMap<u32, Vec<String>>,
+    tails: &[(String, LogTail)],
+) {
+    println!();
+    println!("--- devbox dashboard ---");
+    println!("devbox running with pid: {}", std::process::id());
+    println!();
+
+    let headers = table_headers();
     let mut rows: Vec<Vec<String>> = Vec::new();
-    for (process, _) in children {
-        let status = match exited.get(&process.name) {
-            Some(code) => format!("exited ({code})"),
-            None => "running".to_string(),
-        };
-        let m = metrics.get(&process.pid);
-        let cpu = m
-            .and_then(|m| m.cpu_percent)
-            .map(|v| format!("{v:.0}%"))
-            .unwrap_or_default();
-        let mem = m
-            .and_then(|m| m.memory_bytes)
-            .map(format_bytes)
-            .unwrap_or_default();
-        let listen = listening.get(&process.pid).map(|e| e.join(" ")).unwrap_or_default();
+    for service in service_rows(children, exited, metrics, listening) {
         rows.push(vec![
-            process.name.clone(),
-            status,
-            process.pid.to_string(),
-            process.parent_pid.to_string(),
-            cpu,
-            mem,
-            listen,
+            service.name,
+            service.status,
+            service.pid.to_string(),
+            service.parent_pid.to_string(),
+            service.cpu,
+            service.memory,
+            service.listening,
         ]);
     }
 
@@ -433,34 +687,6 @@ fn run_powershell(script: &str) -> String {
         .ok()
         .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
         .unwrap_or_default()
-}
-
-fn clear_screen() {
-    static INIT: std::sync::Once = std::sync::Once::new();
-    INIT.call_once(|| {
-        #[cfg(windows)]
-        enable_ansi();
-    });
-    print!("\x1b[2J\x1b[H");
-}
-
-#[cfg(windows)]
-fn enable_ansi() {
-    use windows_sys::Win32::System::Console::{
-        GetConsoleMode, GetStdHandle, SetConsoleMode, ENABLE_VIRTUAL_TERMINAL_PROCESSING,
-        STD_OUTPUT_HANDLE,
-    };
-    unsafe {
-        let handle = GetStdHandle(STD_OUTPUT_HANDLE);
-        if handle == -1 {
-            return;
-        }
-        let mut mode: u32 = 0;
-        if GetConsoleMode(handle, &mut mode) == 0 {
-            return;
-        }
-        let _ = SetConsoleMode(handle, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING);
-    }
 }
 
 /// Incrementally follows a service log file, keeping only the most recent

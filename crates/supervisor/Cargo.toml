@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 config = { path = "../config" }
+ratatui = "0.29"
 runtime = { path = "../runtime" }
 serde = { version = "1", features = ["derive"] }
 thiserror = "2"
