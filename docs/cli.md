@@ -83,10 +83,24 @@ Requires an initialized workspace.
 
 ### `devbox services`
 
-Manages the `enabled` flag of services declared in the `[services]` section of
-`devbox.toml`. Disabled services stay defined in the config but are skipped by
-`devbox up`. Services default to enabled, so existing configs are unaffected
-until a service is explicitly disabled.
+Manages services declared in the `[services]` section of `devbox.toml`.
+
+#### `devbox services add <name> <command> [args...] [--env-file]`
+
+Appends a new service to `devbox.toml`. `command` and `args` are the executable
+and its arguments; `cwd` is set to the directory where the command is run.
+Requires an initialized workspace.
+
+With `--env-file`, DevBox creates an empty
+`.devbox/workspace/configs/<name>_config.toml` (an `[environment]` table, see
+[config.md](config.md)) and points the service's `env_file` at it. Place
+`--env-file` before the service arguments.
+
+Examples:
+
+    devbox services add coredns coredns -conf Corefile
+
+    devbox services add bar --env-file dotnet run --project src
 
 #### `devbox services enable <name>`
 

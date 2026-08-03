@@ -118,6 +118,8 @@ struct ServicesArgs {
 
 #[derive(Debug, Subcommand)]
 enum ServicesCommands {
+    /// Add a new service to devbox.toml
+    Add(ServicesAddArgs),
     /// Enable a service so `devbox up` starts it
     Enable(ServiceRef),
     /// Disable a service so `devbox up` skips it
@@ -128,6 +130,21 @@ enum ServicesCommands {
 struct ServiceRef {
     /// Service name as declared in the `[services]` section of devbox.toml
     name: String,
+}
+
+#[derive(Debug, clap::Args)]
+struct ServicesAddArgs {
+    /// Service name as it should appear in the `[services]` section
+    name: String,
+    /// Executable to run
+    command: String,
+    /// Arguments passed to the executable
+    #[arg(allow_hyphen_values = true)]
+    args: Vec<String>,
+    /// Generate `.devbox/workspace/configs/<name>_config.toml` and use it as
+    /// this service's `env_file`. Place this before the service arguments.
+    #[arg(long)]
+    env_file: bool,
 }
 
 #[derive(Debug, clap::Args)]
@@ -601,6 +618,10 @@ fn services(args: &ServicesArgs) -> ExitCode {
         Ok(ws) => ws,
         Err(code) => return code,
     };
+    match &args.command {
+        ServicesCommands::Add(add) => return services_add(&ws, add),
+        ServicesCommands::Enable(_) | ServicesCommands::Disable(_) => {}
+    }
     let config_path = ws.root().join(config::FILE_NAME);
     let mut config = match config::Config::load(&config_path) {
         Ok(config) => config,
@@ -611,6 +632,7 @@ fn services(args: &ServicesArgs) -> ExitCode {
     };
 
     let (name, enabled) = match &args.command {
+        ServicesCommands::Add(_) => unreachable!("handled above"),
         ServicesCommands::Enable(name) => (&name.name, true),
         ServicesCommands::Disable(name) => (&name.name, false),
     };
@@ -631,6 +653,72 @@ fn services(args: &ServicesArgs) -> ExitCode {
         return ExitCode::FAILURE;
     }
     println!("Service `{name}` {state}");
+    ExitCode::SUCCESS
+}
+
+fn services_add(ws: &workspace::Workspace, args: &ServicesAddArgs) -> ExitCode {
+    let config_path = ws.root().join(config::FILE_NAME);
+    let mut config = match config::Config::load(&config_path) {
+        Ok(config) => config,
+        Err(err) => {
+            eprintln!("devbox: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
+    if config.services.contains_key(&args.name) {
+        eprintln!("devbox: a service named `{}` already exists in devbox.toml", args.name);
+        return ExitCode::FAILURE;
+    }
+
+    let cwd = match std::env::current_dir() {
+        Ok(cwd) => cwd,
+        Err(err) => {
+            eprintln!("devbox: failed to determine the current directory: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let cwd_display = cwd.display().to_string();
+
+    let mut service = config::Service {
+        command: args.command.clone(),
+        args: args.args.clone(),
+        cwd: Some(cwd),
+        env_file: None,
+        environment: Default::default(),
+        enabled: true,
+    };
+
+    let mut env_file_note = None;
+    if args.env_file {
+        let configs_dir = ws.workspace_dir().join("configs");
+        if let Err(err) = std::fs::create_dir_all(&configs_dir) {
+            eprintln!("devbox: failed to create `{}`: {err}", configs_dir.display());
+            return ExitCode::FAILURE;
+        }
+        let env_path = configs_dir.join(format!("{}_config.toml", args.name));
+        if !env_path.exists() && let Err(err) = std::fs::write(&env_path, "[environment]\n") {
+            eprintln!("devbox: failed to write `{}`: {err}", env_path.display());
+            return ExitCode::FAILURE;
+        }
+        service.env_file = Some(env_path.clone());
+        env_file_note = Some(env_path);
+    }
+
+    config.services.insert(args.name.clone(), service);
+    if let Err(err) = config.save(&config_path) {
+        eprintln!("devbox: {err}");
+        return ExitCode::FAILURE;
+    }
+
+    println!("Added service `{}`", args.name);
+    println!("  command:   {}", args.command);
+    if !args.args.is_empty() {
+        println!("  args:      {}", args.args.join(" "));
+    }
+    println!("  cwd:       {cwd_display}");
+    if let Some(path) = &env_file_note {
+        println!("  env_file:  {}", path.display());
+    }
     ExitCode::SUCCESS
 }
 
