@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
-use config::Service;
+use config::{EnvironmentFile, Service};
 use runtime::Environment;
 use thiserror::Error;
 
@@ -18,6 +18,12 @@ pub enum SupervisorError {
         name: String,
         #[source]
         source: io::Error,
+    },
+    #[error("failed to load environment file for `{name}`: {source}")]
+    EnvFile {
+        name: String,
+        #[source]
+        source: Box<config::ConfigError>,
     },
     #[error("failed to wait on `{name}`: {source}")]
     Wait {
@@ -127,6 +133,20 @@ impl Supervisor {
             cmd.current_dir(&cwd);
         }
         env.apply(&mut cmd);
+        if let Some(env_file) = &service.env_file {
+            let path = if env_file.is_absolute() {
+                env_file.clone()
+            } else {
+                self.base_dir.join(env_file)
+            };
+            let file = EnvironmentFile::load(&path).map_err(|source| SupervisorError::EnvFile {
+                name: name.to_string(),
+                source: Box::new(source),
+            })?;
+            for (key, value) in &file.environment {
+                cmd.env(key, value);
+            }
+        }
         for (key, value) in &service.environment {
             cmd.env(key, value);
         }
@@ -363,6 +383,7 @@ mod tests {
                     command: "cmd".into(),
                     args: vec!["/C".into(), "ping -n 60 127.0.0.1 > nul".into()],
                     cwd: None,
+                    env_file: None,
                     environment: BTreeMap::new(),
                     enabled: true,
                 },
@@ -374,6 +395,7 @@ mod tests {
                     command: "sleep".into(),
                     args: vec!["60".into()],
                     cwd: None,
+                    env_file: None,
                     environment: BTreeMap::new(),
                     enabled: true,
                 },
@@ -389,6 +411,7 @@ mod tests {
                     command: "cmd".into(),
                     args: vec!["/C".into(), "echo hello".into()],
                     cwd: None,
+                    env_file: None,
                     environment: BTreeMap::new(),
                     enabled: true,
                 },
@@ -400,6 +423,7 @@ mod tests {
                     command: "sh".into(),
                     args: vec!["-c".into(), "echo hello".into()],
                     cwd: None,
+                    env_file: None,
                     environment: BTreeMap::new(),
                     enabled: true,
                 },
@@ -593,6 +617,80 @@ mod tests {
         let base = temp_dir();
         let sup = Supervisor::new(base.join("state.toml"), base.join("logs"), &base);
         assert!(sup.clear_logs(None).expect("clear logs").is_empty());
+        fs::remove_dir_all(&base).ok();
+    }
+
+    fn env_dump_service(env_file: Option<PathBuf>) -> (String, Service) {
+        if cfg!(windows) {
+            (
+                "envdumper".into(),
+                Service {
+                    command: "cmd".into(),
+                    args: vec!["/C".into(), "set".into()],
+                    cwd: None,
+                    env_file,
+                    environment: BTreeMap::new(),
+                    enabled: true,
+                },
+            )
+        } else {
+            (
+                "envdumper".into(),
+                Service {
+                    command: "sh".into(),
+                    args: vec!["-c".into(), "env".into()],
+                    cwd: None,
+                    env_file,
+                    environment: BTreeMap::new(),
+                    enabled: true,
+                },
+            )
+        }
+    }
+
+    #[test]
+    fn env_file_values_injected_and_inline_wins() {
+        let base = temp_dir();
+        fs::write(
+            base.join("svc.env.toml"),
+            "[environment]\nDEVBOX_FROM_FILE = \"file\"\nDEVBOX_SHARED = \"file\"\n",
+        )
+        .expect("write env file");
+
+        let (name, mut service) = env_dump_service(Some(PathBuf::from("svc.env.toml")));
+        service
+            .environment
+            .insert("DEVBOX_SHARED".into(), "inline".into());
+        let services = BTreeMap::from([(name.clone(), service)]);
+
+        let sup = Supervisor::new(base.join("state.toml"), base.join("logs"), &base);
+        let env = Environment::from_current();
+        let mut spawned = sup.spawn_all(&services, &env).expect("spawn");
+        sup.monitor(&mut spawned).expect("monitor");
+
+        let log = fs::read_to_string(sup.log_dir.join("envdumper.log")).expect("read log");
+        assert!(log.contains("DEVBOX_FROM_FILE=file"));
+        assert!(log.contains("DEVBOX_SHARED=inline"));
+        assert!(!log.contains("DEVBOX_SHARED=file"));
+
+        fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn missing_env_file_fails_spawn() {
+        let base = temp_dir();
+        let (name, service) = env_dump_service(Some(PathBuf::from("missing.env.toml")));
+
+        let sup = Supervisor::new(base.join("state.toml"), base.join("logs"), &base);
+        let env = Environment::from_current();
+        let err = sup
+            .spawn_all(&BTreeMap::from([(name, service)]), &env)
+            .expect_err("missing env file fails spawn");
+        match err {
+            SupervisorError::EnvFile { .. } => {}
+            other => panic!("expected EnvFile error, got {other:?}"),
+        }
+
         fs::remove_dir_all(&base).ok();
     }
 }

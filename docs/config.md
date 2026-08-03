@@ -54,6 +54,7 @@ key is the service name; its value describes how to run it:
 | `command`     | Executable to run (required)                  |
 | `args`        | Arguments passed to the executable            |
 | `cwd`         | Working directory (relative to the workspace) |
+| `env_file`    | External TOML file with an `[environment]` table (relative to the workspace) |
 | `environment` | Extra environment variables for this service  |
 
 `command` is the executable to launch, resolved like any program name: against
@@ -72,6 +73,40 @@ args = ["run"]
 Services run inside the isolated DevBox environment with their output
 appended to `.devbox/workspace/logs/<name>.log`. See [cli.md](cli.md) for
 `devbox up`, `status`, `logs`, and `stop`.
+
+### `env_file` (external environment)
+
+A service can load its environment variables from a separate TOML file instead
+of inlining them in `devbox.toml`:
+
+```toml
+[services.contract-oncall]
+command = "dotnet"
+args = ["run"]
+cwd = "C:/repos/contract-oncall"
+env_file = "./.devbox/workspace/configs/contract-oncall.toml"
+```
+
+The referenced file contains an `[environment]` table:
+
+```toml
+[environment]
+ASPNETCORE_ENVIRONMENT = "Development"
+ConnectionStrings__Main = "Server=localhost;Database=ContractOnCall;"
+```
+
+Every key/value pair is injected into the spawned process. Relative
+`env_file` paths resolve against the workspace root. The merge order, lowest
+to highest precedence, is:
+
+1. `env_file` values
+2. Inline `[services.<name>.environment]` (overrides `env_file`)
+3. Runtime overrides (future)
+
+If the file is missing or cannot be parsed, `devbox up` fails service startup
+with a descriptive error. The file is only read, never modified. This works
+naturally with ASP.NET Core's built-in environment variable configuration
+(`ConnectionStrings__Main`, `Logging__LogLevel__Default`, etc.).
 
 ### `[tools]`
 

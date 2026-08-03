@@ -1008,6 +1008,7 @@ mod tests {
                 command: "cmd".into(),
                 args: vec!["/C".into(), "echo hello".into()],
                 cwd: None,
+                env_file: None,
                 environment: BTreeMap::new(),
                 enabled: true,
             }
@@ -1016,6 +1017,7 @@ mod tests {
                 command: "sh".into(),
                 args: vec!["-c".into(), "echo hello".into()],
                 cwd: None,
+                env_file: None,
                 environment: BTreeMap::new(),
                 enabled: true,
             }
@@ -1069,6 +1071,7 @@ mod tests {
                 command: "cmd".into(),
                 args: vec!["/C".into(), "ping -n 60 127.0.0.1 > nul".into()],
                 cwd: None,
+                env_file: None,
                 environment: BTreeMap::new(),
                 enabled: true,
             }
@@ -1077,6 +1080,7 @@ mod tests {
                 command: "sleep".into(),
                 args: vec!["60".into()],
                 cwd: None,
+                env_file: None,
                 environment: BTreeMap::new(),
                 enabled: true,
             }

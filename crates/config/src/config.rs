@@ -19,7 +19,7 @@ pub enum ConfigError {
     Parse {
         path: std::path::PathBuf,
         #[source]
-        source: toml::de::Error,
+        source: Box<toml::de::Error>,
     },
     #[error("failed to write `{path}`: {source}")]
     Write {
@@ -31,7 +31,15 @@ pub enum ConfigError {
     Serialize {
         path: std::path::PathBuf,
         #[source]
-        source: toml::ser::Error,
+        source: Box<toml::ser::Error>,
+    },
+    #[error("environment file not found:\n\n{}", .path.display())]
+    EnvFileNotFound { path: std::path::PathBuf },
+    #[error("failed to parse environment file `{path}`: {source}")]
+    EnvFileParse {
+        path: std::path::PathBuf,
+        #[source]
+        source: Box<toml::de::Error>,
     },
 }
 
@@ -57,6 +65,12 @@ pub struct Service {
     pub args: Vec<String>,
     #[serde(default)]
     pub cwd: Option<PathBuf>,
+    /// Path to a TOML file with an `[environment]` table whose values are
+    /// loaded into the spawned process before this service's inline
+    /// `environment`. Inline values take precedence. Relative paths resolve
+    /// against the workspace root. The file is only read, never modified.
+    #[serde(default)]
+    pub env_file: Option<PathBuf>,
     #[serde(default)]
     pub environment: BTreeMap<String, String>,
     /// Whether `devbox up` should start this service. Set to `false` to keep a
@@ -103,7 +117,7 @@ impl Config {
         })?;
         toml::from_str(&contents).map_err(|source| ConfigError::Parse {
             path: path.to_path_buf(),
-            source,
+            source: Box::new(source),
         })
     }
 
@@ -111,11 +125,34 @@ impl Config {
         let contents =
             toml::to_string_pretty(self).map_err(|source| ConfigError::Serialize {
                 path: path.to_path_buf(),
-                source,
+                source: Box::new(source),
             })?;
         fs::write(path, contents).map_err(|source| ConfigError::Write {
             path: path.to_path_buf(),
             source,
+        })
+    }
+}
+
+/// The TOML schema of an external `env_file`: an optional `[environment]`
+/// table of key/value pairs injected into the service process.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct EnvironmentFile {
+    #[serde(default)]
+    pub environment: BTreeMap<String, String>,
+}
+
+impl EnvironmentFile {
+    /// Reads and parses an external environment file. A missing file and an
+    /// unparseable file are reported separately so the caller can surface a
+    /// precise error.
+    pub fn load(path: &Path) -> Result<Self, ConfigError> {
+        let contents = fs::read_to_string(path).map_err(|_| ConfigError::EnvFileNotFound {
+            path: path.to_path_buf(),
+        })?;
+        toml::from_str(&contents).map_err(|source| ConfigError::EnvFileParse {
+            path: path.to_path_buf(),
+            source: Box::new(source),
         })
     }
 }
@@ -255,6 +292,7 @@ command = "redis-server"
                     command: "dotnet".into(),
                     args: vec!["run".into()],
                     cwd: None,
+                    env_file: None,
                     environment: BTreeMap::new(),
                     enabled: true,
                 },
@@ -402,6 +440,69 @@ repo = "ripgrep"
         let loaded = Config::load(&path).expect("load config");
         assert_eq!(loaded.tools["git"].github.repo, "git");
 
+        fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn parses_service_env_file() {
+        let path = temp_file("envfile-service.toml");
+        fs::write(
+            &path,
+            r#"
+[services.api]
+command = "dotnet"
+env_file = "./configs/api.toml"
+"#,
+        )
+        .expect("write config");
+
+        let config = Config::load(&path).expect("load config");
+        assert_eq!(
+            config.services["api"].env_file.as_deref(),
+            Some(Path::new("./configs/api.toml"))
+        );
+
+        fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn env_file_loads_environment_table() {
+        let path = temp_file("env-file.toml");
+        fs::write(
+            &path,
+            r#"
+[environment]
+A = "1"
+B = "2"
+"#,
+        )
+        .expect("write env file");
+
+        let file = EnvironmentFile::load(&path).expect("load env file");
+        assert_eq!(file.environment.get("A").map(String::as_str), Some("1"));
+        assert_eq!(file.environment.get("B").map(String::as_str), Some("2"));
+
+        fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn env_file_missing_is_env_file_not_found() {
+        let path = temp_file("missing-env.toml");
+        assert!(matches!(
+            EnvironmentFile::load(&path),
+            Err(ConfigError::EnvFileNotFound { .. })
+        ));
+        fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn env_file_invalid_toml_is_parse_error() {
+        let path = temp_file("bad-env.toml");
+        fs::write(&path, "not toml [").expect("write env file");
+        assert!(matches!(
+            EnvironmentFile::load(&path),
+            Err(ConfigError::EnvFileParse { .. })
+        ));
         fs::remove_file(&path).ok();
     }
 }
