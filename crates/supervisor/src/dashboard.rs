@@ -12,7 +12,8 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Alignment, Constraint, Layout};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, Cell, Paragraph, Row, Table};
+use ratatui::widgets::{Block, Cell, Paragraph, Row, Table, Wrap};
+use unicode_width::UnicodeWidthChar;
 
 use crate::{Process, SupervisorError};
 
@@ -57,6 +58,18 @@ struct Metrics {
 /// the (more expensive) scan is throttled.
 const LISTEN_SCAN_INTERVAL: Duration = Duration::from_secs(5);
 
+/// Maximum number of bytes a log tail reads per refresh. When a service floods
+/// its log, unbounded reads stall the dashboard for a whole tick and it stops
+/// appearing to update. Capping the per-tick read keeps the UI responsive; the
+/// remaining bytes are picked up on subsequent refreshes.
+const MAX_LOG_BYTES: u64 = 256 * 1024;
+
+/// Maximum number of characters kept from a single log line. A service that
+/// emits one enormous line (e.g. a megabyte JSON one-liner) would otherwise
+/// dominate the whole panel and stall rendering; longer lines are truncated
+/// with an ellipsis so the dashboard keeps flowing.
+const MAX_LINE_CHARS: usize = 4 * 1024;
+
 /// Per-service accent color, cycled by index so a service keeps the same color
 /// across the table row and its log panel.
 fn service_color(index: usize) -> Color {
@@ -80,6 +93,92 @@ fn format_uptime(elapsed: Duration) -> String {
     } else {
         format!("{secs}s")
     }
+}
+
+/// The number of rows `line` occupies when word-wrapped at `width`, matching
+/// ratatui's `WordWrapper` (trim=false) so the dashboard can auto-scroll a log
+/// panel to the bottom. Using a naive `chars / width` estimate instead can
+/// overshoot the real height, which makes `Paragraph::scroll` skip past the
+/// text entirely and the panel render blank.
+fn wrapped_rows(line: &Line<'_>, width: u16) -> usize {
+    let mut rows = 0usize;
+    for span in &line.spans {
+        for raw in span.content.split('\n') {
+            rows += wrapped_text_rows(raw, width);
+        }
+    }
+    rows
+}
+
+/// Number of rows a single string occupies once word-wrapped at `width`
+/// columns. Mirrors ratatui 0.29's `WordWrapper::process_input` (trim=false):
+/// words fit whole onto a row, an unbreakable word wider than the row is split
+/// across rows, and trailing whitespace that fits the leftover of a row is
+/// dropped.
+fn wrapped_text_rows(text: &str, width: u16) -> usize {
+    let width = width.max(1) as usize;
+    if text.is_empty() {
+        return 0;
+    }
+    let mut rows = 0usize;
+    let mut line: Vec<char> = Vec::new();
+    let mut line_width = 0usize;
+    let mut word_width = 0usize;
+    let mut ws_width = 0usize;
+    let mut word: Vec<char> = Vec::new();
+    let mut ws: Vec<char> = Vec::new();
+    let mut prev_non_ws = false;
+
+    for ch in text.chars() {
+        let is_ws = ch.is_whitespace();
+        let cw = ch.width().unwrap_or(0);
+        if cw > width {
+            continue;
+        }
+        let word_found = prev_non_ws && is_ws;
+        let untrimmed_overflow =
+            line.is_empty() && word_width + ws_width + cw > width;
+        if word_found || untrimmed_overflow {
+            line.append(&mut ws);
+            line_width += ws_width;
+            line.append(&mut word);
+            line_width += word_width;
+            ws_width = 0;
+            word_width = 0;
+        }
+        let line_full = line_width >= width;
+        let word_overflow = cw > 0 && line_width + ws_width + word_width >= width;
+        if line_full || word_overflow {
+            let mut remaining = width.saturating_sub(line_width);
+            rows += 1;
+            line.clear();
+            line_width = 0;
+            while let Some(&c) = ws.first() {
+                let ww = c.width().unwrap_or(0);
+                if ww > remaining {
+                    break;
+                }
+                ws_width -= ww;
+                remaining -= ww;
+                ws.remove(0);
+            }
+            if is_ws && ws.is_empty() {
+                continue;
+            }
+        }
+        if is_ws {
+            ws_width += cw;
+            ws.push(ch);
+        } else {
+            word_width += cw;
+            word.push(ch);
+        }
+        prev_non_ws = !is_ws;
+    }
+    if !line.is_empty() || !word.is_empty() || !ws.is_empty() {
+        rows += 1;
+    }
+    rows
 }
 
 /// Runs the live dashboard until every service exits or the stop flag is
@@ -563,15 +662,18 @@ fn render_tui(
             let lines: Vec<Line> = tail.render().map(Line::from).collect();
             let text = Text::from(lines);
             let visible = chunk.height.saturating_sub(2).max(1);
-            let content_width = chunk.width.saturating_sub(2).max(1) as usize;
+            let content_width = chunk.width.saturating_sub(2).max(1);
             let total_rows: usize = text
                 .lines
                 .iter()
-                .map(|line| line.width().div_ceil(content_width).max(1))
+                .map(|l| wrapped_rows(l, content_width))
                 .sum();
             let scroll = total_rows.saturating_sub(visible as usize) as u16;
             f.render_widget(
-                Paragraph::new(text).block(block).scroll((scroll, 0)),
+                Paragraph::new(text)
+                    .block(block)
+                    .wrap(Wrap { trim: false })
+                    .scroll((scroll, 0)),
                 *chunk,
             );
         }
@@ -953,23 +1055,30 @@ impl LogTail {
             self.pos = 0;
             self.lines.clear();
         }
-        if len == self.pos {
+        if len <= self.pos {
             return;
         }
         if file.seek(SeekFrom::Start(self.pos)).is_err() {
             return;
         }
-        let mut buf = Vec::new();
-        if file.read_to_end(&mut buf).is_err() {
+        let to_read = len.saturating_sub(self.pos).min(MAX_LOG_BYTES) as usize;
+        let mut buf = vec![0u8; to_read];
+        let Ok(bytes_read) = file.read(&mut buf) else {
             return;
-        }
-        self.pos = len;
+        };
+        buf.truncate(bytes_read);
+        self.pos += bytes_read as u64;
         for line in String::from_utf8_lossy(&buf).split('\n') {
             let line = line.trim_end_matches('\r');
             if line.is_empty() {
                 continue;
             }
-            self.lines.push_back(line.to_string());
+            let mut line = line.to_string();
+            if line.chars().count() > MAX_LINE_CHARS {
+                line = line.chars().take(MAX_LINE_CHARS).collect();
+                line.push('\u{2026}');
+            }
+            self.lines.push_back(line);
             if self.lines.len() > self.max_lines {
                 self.lines.pop_front();
             }
@@ -1114,6 +1223,22 @@ mod tests {
         assert_eq!(format_endpoint("127.0.0.1:2009"), "localhost:2009");
         assert_eq!(format_endpoint("0.0.0.0:80"), "*:80");
         assert_eq!(format_endpoint("10.0.0.5:4041"), "10.0.0.5:4041");
+    }
+
+    #[test]
+    fn wrapped_rows_counts_word_wrap_height() {
+        let line = Line::from("one two three four five six seven eight nine ten");
+        assert_eq!(wrapped_rows(&line, 10), 6);
+        assert_eq!(wrapped_rows(&line, 98), 1);
+
+        let long = Line::from("x".repeat(199));
+        assert_eq!(wrapped_rows(&long, 10), 20);
+
+        let mut panel = String::from("a".repeat(4096));
+        panel.push('\u{2026}');
+        let big = Line::from(panel);
+        let rows = wrapped_rows(&big, 98);
+        assert!((41..=43).contains(&rows), "long line wraps to about 42 rows, got {rows}");
     }
 
     #[test]

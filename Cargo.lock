@@ -1709,6 +1709,7 @@ dependencies = [
  "serde",
  "thiserror",
  "toml",
+ "unicode-width 0.2.0",
  "windows-sys 0.52.0",
 ]
 
