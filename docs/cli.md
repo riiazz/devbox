@@ -118,6 +118,29 @@ Examples:
 
     devbox services enable caddy
 
+#### `devbox services list`
+
+Lists every service registered in the `[services]` section of `devbox.toml`,
+showing its command, whether it is enabled, its arguments, and its `env_file`
+if any. Example:
+
+    NAME             COMMAND                  ENABLED  ARGS          ENV_FILE
+    api              dotnet                       yes  run --project src
+    bar              dotnet                       yes  run --project src .devbox/workspace/configs/bar_config.toml
+
+### `devbox config <name>`
+
+Prints the resolved configuration for a service, searching by service name.
+Shows the service's `[services.<name>]` section from `devbox.toml`, and — when
+the service has an `env_file` pointing at a workspace config file — appends
+that file's `[environment]` contents. Errors if no such service exists.
+
+Examples:
+
+    devbox config api
+
+    devbox config bar
+
 ### `devbox up [--service <name>...] [--log-lines <n>]`
 
 Starts every service declared in the `[services]` section of `devbox.toml`

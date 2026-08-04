@@ -7,6 +7,10 @@ All notable changes to DevBox are documented in this file. DevBox follows
 
 ### Added
 
+- **`devbox services list`** — lists every service registered in
+  `devbox.toml` with its command, enabled state, arguments, and `env_file`.
+- **`devbox config <name>`** — prints a service's configuration from
+  `devbox.toml` and, when present, its workspace `env_file`.
 - **Live `devbox up` dashboard** — `devbox up` now redraws a dashboard every
   second showing each service's status, PID, parent PID, current CPU usage,
   memory, listening ports, and live logs. Logs default to the first five

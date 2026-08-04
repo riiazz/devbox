@@ -15,4 +15,5 @@ downloader = { path = "../downloader" }
 runtime = { path = "../runtime" }
 supervisor = { path = "../supervisor" }
 toolchain = { path = "../toolchain" }
+toml = "0.9"
 workspace = { path = "../workspace" }

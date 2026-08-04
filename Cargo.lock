@@ -267,6 +267,7 @@ dependencies = [
  "downloader",
  "runtime",
  "supervisor",
+ "toml",
  "toolchain",
  "workspace",
 ]
