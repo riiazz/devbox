@@ -34,6 +34,27 @@ impl Target {
             crate::extract::ArchiveFormat::TarGz
         }
     }
+
+    /// GOOS-style operating system name used by many Go projects' release
+    /// assets (e.g. `windows`, `linux`, `darwin`).
+    pub fn goos(&self) -> Option<&'static str> {
+        match self.os {
+            "windows" => Some("windows"),
+            "linux" => Some("linux"),
+            "macos" => Some("darwin"),
+            _ => None,
+        }
+    }
+
+    /// GOARCH-style architecture name used by many Go projects' release
+    /// assets (e.g. `amd64`, `arm64`).
+    pub fn goarch(&self) -> Option<&'static str> {
+        match self.arch {
+            "x86_64" => Some("amd64"),
+            "aarch64" => Some("arm64"),
+            _ => None,
+        }
+    }
 }
 
 #[cfg(test)]

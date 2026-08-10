@@ -50,10 +50,13 @@ devbox exec rg --version
 | `devbox shell` | Open an interactive shell inside the environment |
 | `devbox install <name> [--version <v>]` | Download and register a tool |
 | `devbox tools list` / `devbox tools register` | Manage the tool registry |
-| `devbox up` | Start and supervise `[services]` |
+| `devbox up [--service <name>...] [--log-lines <n>]` | Start and supervise `[services]` with a live dashboard |
 | `devbox status` | Report service PIDs and status |
 | `devbox logs [name] [--lines <n>]` | Print service logs |
+| `devbox clear-logs [name...]` | Truncate service log files |
 | `devbox stop [name...]` | Stop supervised services |
+| `devbox services add / enable / disable / list` | Manage the `[services]` section of `devbox.toml` |
+| `devbox config <name>` | Print a service's resolved configuration |
 
 ## Documentation
 
@@ -63,9 +66,10 @@ architecture, and the versioned roadmap.
 ## Releases
 
 - [CHANGELOG.md](CHANGELOG.md)
+- [v1.1.0 release notes](docs/release/v1.1.0.md)
 - [v1.0.0 release notes](docs/release/v1.0.0.md)
 
 ## Status
 
-v1.0.0 — stable. Per the [roadmap](docs/Roadmap.md), v1.0 is where DevBox
+v1.1.0 — stable. Per the [roadmap](docs/Roadmap.md), v1.0 is where DevBox
 becomes useful; the plan is to use it in anger before adding features.

@@ -1,9 +1,13 @@
 use clap::{Parser, Subcommand};
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
 
-use config::Config;
+use config::{Config, Service};
 use toolchain::ToolRegistry;
 
 #[derive(Debug, Parser)]
@@ -19,6 +23,12 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Commands {
+    /// Truncate service log files (all services when no names given)
+    ClearLogs(ClearLogsArgs),
+
+    /// Print a service's configuration from devbox.toml and its env_file
+    Config(ConfigArgs),
+
     /// Run a program inside the DevBox environment
     Exec(ExecArgs),
 
@@ -34,6 +44,9 @@ enum Commands {
     /// Open an interactive shell inside the DevBox environment
     Shell,
 
+    /// Enable or disable services in devbox.toml
+    Services(ServicesArgs),
+
     /// Show status of the services supervised by `devbox up`
     Status,
 
@@ -44,7 +57,7 @@ enum Commands {
     Tools(ToolsArgs),
 
     /// Start the services defined in [services]
-    Up,
+    Up(UpArgs),
 }
 
 #[derive(Debug, clap::Args)]
@@ -90,6 +103,56 @@ struct RegisterArgs {
 }
 
 #[derive(Debug, clap::Args)]
+struct UpArgs {
+    /// Services to show live logs for (defaults to the first five)
+    #[arg(short, long)]
+    service: Vec<String>,
+
+    /// Number of trailing log lines shown per service
+    #[arg(long, default_value_t = 5)]
+    log_lines: usize,
+}
+
+#[derive(Debug, clap::Args)]
+struct ServicesArgs {
+    #[command(subcommand)]
+    command: ServicesCommands,
+}
+
+#[derive(Debug, Subcommand)]
+enum ServicesCommands {
+    /// Add a new service to devbox.toml
+    Add(ServicesAddArgs),
+    /// Enable a service so `devbox up` starts it
+    Enable(ServiceRef),
+    /// Disable a service so `devbox up` skips it
+    Disable(ServiceRef),
+    /// List registered services
+    List,
+}
+
+#[derive(Debug, clap::Args)]
+struct ServiceRef {
+    /// Service name as declared in the `[services]` section of devbox.toml
+    name: String,
+}
+
+#[derive(Debug, clap::Args)]
+struct ServicesAddArgs {
+    /// Service name as it should appear in the `[services]` section
+    name: String,
+    /// Executable to run
+    command: String,
+    /// Arguments passed to the executable
+    #[arg(allow_hyphen_values = true)]
+    args: Vec<String>,
+    /// Generate `.devbox/workspace/configs/<name>_config.toml` and use it as
+    /// this service's `env_file`. Place this before the service arguments.
+    #[arg(long)]
+    env_file: bool,
+}
+
+#[derive(Debug, clap::Args)]
 struct ExecArgs {
     /// Program to run
     program: String,
@@ -110,6 +173,19 @@ struct LogsArgs {
 }
 
 #[derive(Debug, clap::Args)]
+struct ConfigArgs {
+    /// Service name as declared in the `[services]` section of devbox.toml
+    name: String,
+}
+
+#[derive(Debug, clap::Args)]
+struct ClearLogsArgs {
+    /// Services whose logs to clear (all services when omitted)
+    #[arg(trailing_var_arg = true)]
+    names: Vec<String>,
+}
+
+#[derive(Debug, clap::Args)]
 struct StopArgs {
     /// Services to stop (all services when omitted)
     #[arg(trailing_var_arg = true)]
@@ -119,15 +195,18 @@ struct StopArgs {
 fn main() -> ExitCode {
     let cli = Cli::parse();
     match cli.command {
+        Commands::ClearLogs(args) => clear_logs(&args),
+        Commands::Config(args) => config(&args),
         Commands::Exec(args) => exec(&args),
         Commands::Init => init(),
         Commands::Install(args) => install(&args),
         Commands::Logs(args) => logs(&args),
         Commands::Shell => shell(),
+        Commands::Services(args) => services(&args),
         Commands::Status => status(),
         Commands::Stop(args) => stop(&args),
         Commands::Tools(args) => tools(&args),
-        Commands::Up => up(),
+        Commands::Up(args) => up(&args),
     }
 }
 
@@ -265,6 +344,10 @@ fn tools_register(path: &Path, args: &RegisterArgs) -> ExitCode {
 }
 
 fn exec(args: &ExecArgs) -> ExitCode {
+    if let Err(err) = ignore_interrupts() {
+        eprintln!("devbox: failed to install Ctrl+C handler: {err}");
+        return ExitCode::FAILURE;
+    }
     let mut runtime = runtime::Runtime::new();
     if let Some(code) = prepare_runtime(&mut runtime) {
         return code;
@@ -282,6 +365,10 @@ fn exec(args: &ExecArgs) -> ExitCode {
 }
 
 fn shell() -> ExitCode {
+    if let Err(err) = ignore_interrupts() {
+        eprintln!("devbox: failed to install Ctrl+C handler: {err}");
+        return ExitCode::FAILURE;
+    }
     let mut runtime = runtime::Runtime::new();
     if let Some(code) = prepare_runtime(&mut runtime) {
         return code;
@@ -303,6 +390,18 @@ fn shell() -> ExitCode {
     };
     println!("devbox: shell exited");
     code
+}
+
+/// Keeps devbox alive when the user presses Ctrl+C inside a foreground child
+/// (the interactive shell or an exec'd program). On both Windows and Unix the
+/// interrupt is delivered to every process attached to the console/terminal,
+/// not just the focused child. Without a handler devbox would terminate while
+/// its child keeps running, orphaning the child shell and leaving two shells
+/// competing for the same terminal input (the "bouncing prompt" bug). The
+/// handler does nothing — its presence is what prevents the default
+/// termination, and Ctrl+C still reaches the child untouched.
+fn ignore_interrupts() -> Result<(), ctrlc::Error> {
+    ctrlc::set_handler(|| {})
 }
 
 /// The interactive shell to spawn: `$SHELL` if set, otherwise PowerShell on
@@ -421,7 +520,7 @@ fn require_workspace() -> Result<workspace::Workspace, ExitCode> {
     })
 }
 
-fn up() -> ExitCode {
+fn up(args: &UpArgs) -> ExitCode {
     let ws = match require_workspace() {
         Ok(ws) => ws,
         Err(code) => return code,
@@ -440,6 +539,31 @@ fn up() -> ExitCode {
         return ExitCode::FAILURE;
     }
 
+    let enabled_services: BTreeMap<String, Service> = config
+        .services
+        .iter()
+        .filter(|(_, service)| service.enabled)
+        .map(|(name, service)| (name.clone(), service.clone()))
+        .collect();
+    if enabled_services.is_empty() {
+        eprintln!(
+            "devbox: all services are disabled; enable one with `devbox services enable <name>`"
+        );
+        return ExitCode::FAILURE;
+    }
+    for name in config.services.keys() {
+        if !config.services[name].enabled {
+            println!("devbox: skipping disabled service `{name}`");
+        }
+    }
+
+    let stop = Arc::new(AtomicBool::new(false));
+    let flag = Arc::clone(&stop);
+    if let Err(err) = ctrlc::set_handler(move || flag.store(true, Ordering::SeqCst)) {
+        eprintln!("devbox: failed to install Ctrl+C handler: {err}");
+        return ExitCode::FAILURE;
+    }
+
     let mut runtime = runtime::Runtime::new();
     if let Some(code) = prepare_runtime(&mut runtime) {
         return code;
@@ -447,20 +571,51 @@ fn up() -> ExitCode {
 
     let sup = supervisor(&ws);
     sup.stop(None).ok();
-    match sup.spawn_all(&config.services, runtime.environment()) {
+    match sup.spawn_all(&enabled_services, runtime.environment()) {
         Ok(mut children) => {
-            println!(
-                "devbox: starting {} service(s) for {}",
-                children.len(),
-                ws.root().display()
-            );
-            if let Err(err) = sup.monitor(&mut children) {
-                eprintln!("devbox: {err}");
-                sup.stop(None).ok();
-                return ExitCode::FAILURE;
-            }
+            let opts = supervisor::dashboard::Options {
+                watch: args.service.clone(),
+                log_lines: args.log_lines,
+                refresh: Duration::from_secs(1),
+                stop,
+            };
+            let result = supervisor::dashboard::run(&mut children, &opts);
             sup.stop(None).ok();
-            println!("devbox: all services stopped");
+            match result {
+                Ok(_exit) => {
+                    println!("devbox: all services stopped");
+                    ExitCode::SUCCESS
+                }
+                Err(err) => {
+                    eprintln!("devbox: {err}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
+        Err(err) => {
+            eprintln!("devbox: {err}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn clear_logs(args: &ClearLogsArgs) -> ExitCode {
+    let ws = match require_workspace() {
+        Ok(ws) => ws,
+        Err(code) => return code,
+    };
+    let names = if args.names.is_empty() {
+        None
+    } else {
+        Some(args.names.as_slice())
+    };
+    match supervisor(&ws).clear_logs(names) {
+        Ok(cleared) => {
+            if cleared.is_empty() {
+                println!("No logs to clear.");
+            } else {
+                println!("Cleared: {}", cleared.join(", "));
+            }
             ExitCode::SUCCESS
         }
         Err(err) => {
@@ -468,6 +623,199 @@ fn up() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+fn config(args: &ConfigArgs) -> ExitCode {
+    let ws = match require_workspace() {
+        Ok(ws) => ws,
+        Err(code) => return code,
+    };
+    let config_path = ws.root().join(config::FILE_NAME);
+    let config = match config::Config::load(&config_path) {
+        Ok(config) => config,
+        Err(err) => {
+            eprintln!("devbox: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let service = match config.services.get(&args.name) {
+        Some(service) => service,
+        None => {
+            eprintln!("devbox: no service named `{}` in devbox.toml", args.name);
+            return ExitCode::FAILURE;
+        }
+    };
+    let snippet = match toml::to_string_pretty(service) {
+        Ok(text) => text,
+        Err(err) => {
+            eprintln!("devbox: failed to serialize service `{}`: {err}", args.name);
+            return ExitCode::FAILURE;
+        }
+    };
+    println!("[services.{}]", args.name);
+    println!("{}", snippet.trim_end());
+    if let Some(env_file) = &service.env_file {
+        let path = ws.root().join(env_file);
+        let file = match config::EnvironmentFile::load(&path) {
+            Ok(file) => file,
+            Err(err) => {
+                eprintln!("devbox: {err}");
+                return ExitCode::FAILURE;
+            }
+        };
+        let snippet = match toml::to_string_pretty(&file) {
+            Ok(text) => text,
+            Err(err) => {
+                eprintln!("devbox: failed to serialize `{}`: {err}", path.display());
+                return ExitCode::FAILURE;
+            }
+        };
+        println!();
+        println!("# env_file: {}", path.display());
+        println!("{}", snippet.trim_end());
+    }
+    ExitCode::SUCCESS
+}
+
+fn services(args: &ServicesArgs) -> ExitCode {
+    let ws = match require_workspace() {
+        Ok(ws) => ws,
+        Err(code) => return code,
+    };
+    match &args.command {
+        ServicesCommands::Add(add) => return services_add(&ws, add),
+        ServicesCommands::List => return services_list(&ws),
+        ServicesCommands::Enable(_) | ServicesCommands::Disable(_) => {}
+    }
+    let config_path = ws.root().join(config::FILE_NAME);
+    let mut config = match config::Config::load(&config_path) {
+        Ok(config) => config,
+        Err(err) => {
+            eprintln!("devbox: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let (name, enabled) = match &args.command {
+        ServicesCommands::Add(_) => unreachable!("handled above"),
+        ServicesCommands::List => unreachable!("handled above"),
+        ServicesCommands::Enable(name) => (&name.name, true),
+        ServicesCommands::Disable(name) => (&name.name, false),
+    };
+    let state = if enabled { "enabled" } else { "disabled" };
+
+    if !config.services.contains_key(name) {
+        eprintln!("devbox: no service named `{name}` in devbox.toml");
+        return ExitCode::FAILURE;
+    }
+    if config.services[name].enabled == enabled {
+        println!("Service `{name}` is already {state}");
+        return ExitCode::SUCCESS;
+    }
+
+    config.services.get_mut(name).expect("checked above").enabled = enabled;
+    if let Err(err) = config.save(&config_path) {
+        eprintln!("devbox: {err}");
+        return ExitCode::FAILURE;
+    }
+    println!("Service `{name}` {state}");
+    ExitCode::SUCCESS
+}
+
+fn services_add(ws: &workspace::Workspace, args: &ServicesAddArgs) -> ExitCode {
+    let config_path = ws.root().join(config::FILE_NAME);
+    let mut config = match config::Config::load(&config_path) {
+        Ok(config) => config,
+        Err(err) => {
+            eprintln!("devbox: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
+    if config.services.contains_key(&args.name) {
+        eprintln!("devbox: a service named `{}` already exists in devbox.toml", args.name);
+        return ExitCode::FAILURE;
+    }
+
+    let cwd = match std::env::current_dir() {
+        Ok(cwd) => cwd,
+        Err(err) => {
+            eprintln!("devbox: failed to determine the current directory: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let cwd_display = cwd.display().to_string();
+
+    let mut service = config::Service {
+        command: args.command.clone(),
+        args: args.args.clone(),
+        cwd: Some(cwd),
+        env_file: None,
+        environment: Default::default(),
+        enabled: true,
+    };
+
+    let mut env_file_note = None;
+    if args.env_file {
+        let configs_dir = ws.workspace_dir().join("configs");
+        if let Err(err) = std::fs::create_dir_all(&configs_dir) {
+            eprintln!("devbox: failed to create `{}`: {err}", configs_dir.display());
+            return ExitCode::FAILURE;
+        }
+        let env_path = configs_dir.join(format!("{}_config.toml", args.name));
+        if !env_path.exists() && let Err(err) = std::fs::write(&env_path, "[environment]\n") {
+            eprintln!("devbox: failed to write `{}`: {err}", env_path.display());
+            return ExitCode::FAILURE;
+        }
+        service.env_file = Some(env_path.clone());
+        env_file_note = Some(env_path);
+    }
+
+    config.services.insert(args.name.clone(), service);
+    if let Err(err) = config.save(&config_path) {
+        eprintln!("devbox: {err}");
+        return ExitCode::FAILURE;
+    }
+
+    println!("Added service `{}`", args.name);
+    println!("  command:   {}", args.command);
+    if !args.args.is_empty() {
+        println!("  args:      {}", args.args.join(" "));
+    }
+    println!("  cwd:       {cwd_display}");
+    if let Some(path) = &env_file_note {
+        println!("  env_file:  {}", path.display());
+    }
+    ExitCode::SUCCESS
+}
+
+fn services_list(ws: &workspace::Workspace) -> ExitCode {
+    let config_path = ws.root().join(config::FILE_NAME);
+    let config = match config::Config::load(&config_path) {
+        Ok(config) => config,
+        Err(err) => {
+            eprintln!("devbox: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
+    if config.services.is_empty() {
+        println!("No services registered. Add one with `devbox services add`.");
+        return ExitCode::SUCCESS;
+    }
+    println!("{:<16} {:<24} {:>7}  {:<40} ENV_FILE", "NAME", "COMMAND", "ENABLED", "ARGS");
+    for (name, service) in &config.services {
+        let enabled = if service.enabled { "yes" } else { "no" };
+        let args = service.args.join(" ");
+        let env_file = service
+            .env_file
+            .as_ref()
+            .map(|p| p.display().to_string())
+            .unwrap_or_default();
+        println!(
+            "{:<16} {:<24} {:>7}  {:<40} {}",
+            name, service.command, enabled, args, env_file
+        );
+    }
+    ExitCode::SUCCESS
 }
 
 fn status() -> ExitCode {

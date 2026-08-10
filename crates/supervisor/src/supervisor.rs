@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
-use config::Service;
+use config::{EnvironmentFile, Service};
 use runtime::Environment;
 use thiserror::Error;
 
@@ -18,6 +18,12 @@ pub enum SupervisorError {
         name: String,
         #[source]
         source: io::Error,
+    },
+    #[error("failed to load environment file for `{name}`: {source}")]
+    EnvFile {
+        name: String,
+        #[source]
+        source: Box<config::ConfigError>,
     },
     #[error("failed to wait on `{name}`: {source}")]
     Wait {
@@ -127,6 +133,20 @@ impl Supervisor {
             cmd.current_dir(&cwd);
         }
         env.apply(&mut cmd);
+        if let Some(env_file) = &service.env_file {
+            let path = if env_file.is_absolute() {
+                env_file.clone()
+            } else {
+                self.base_dir.join(env_file)
+            };
+            let file = EnvironmentFile::load(&path).map_err(|source| SupervisorError::EnvFile {
+                name: name.to_string(),
+                source: Box::new(source),
+            })?;
+            for (key, value) in &file.environment {
+                cmd.env(key, value);
+            }
+        }
         for (key, value) in &service.environment {
             cmd.env(key, value);
         }
@@ -142,6 +162,7 @@ impl Supervisor {
             Process {
                 name: name.to_string(),
                 pid: child.id(),
+                parent_pid: std::process::id(),
                 log_file,
             },
             child,
@@ -177,9 +198,11 @@ impl Supervisor {
         Ok(())
     }
 
-    /// Stops the recorded processes, optionally limited to `names`. Stale or
-    /// already-dead processes are pruned from the state file regardless of
-    /// whether the kill signal could be delivered.
+    /// Stops the recorded processes, optionally limited to `names`. Only PIDs
+    /// still confirmed to be children of the devbox process that spawned them
+    /// are killed, so a PID that was reused by another program is left alone.
+    /// Stale or already-dead processes are pruned from the state file
+    /// regardless of whether the kill signal could be delivered.
     pub fn stop(&self, names: Option<&[String]>) -> Result<Vec<String>, SupervisorError> {
         let processes = self.state.load()?;
         let selected: Vec<&Process> = processes
@@ -187,11 +210,14 @@ impl Supervisor {
             .filter(|p| names.is_none_or(|names| names.contains(&p.name)))
             .collect();
 
+        let mut killed: Vec<String> = Vec::new();
         for process in &selected {
-            let _ = kill_pid(process.pid);
+            if is_ours(process) {
+                let _ = kill_pid(process.pid);
+                killed.push(process.name.clone());
+            }
         }
 
-        let killed: Vec<String> = selected.iter().map(|p| p.name.clone()).collect();
         let remaining: Vec<Process> = processes
             .iter()
             .filter(|p| !selected.contains(p))
@@ -219,15 +245,58 @@ impl Supervisor {
             .collect())
     }
 
-    /// Log files for the named service (or every service when `name` is None).
+    /// Log files on disk for the named service (or every service when `name` is
+    /// None). The log directory is scanned directly rather than consulting the
+    /// supervisor state, so logs stay discoverable after `devbox stop` clears
+    /// the state file. A missing log directory is treated as "no logs".
     pub fn log_files(&self, name: Option<&str>) -> Result<Vec<(String, PathBuf)>, SupervisorError> {
-        let processes = self.state.load()?;
-        Ok(processes
-            .iter()
-            .filter(|p| name.is_none_or(|name| name == p.name))
-            .map(|p| (p.name.clone(), p.log_file.clone()))
-            .collect())
+        let entries = match fs::read_dir(&self.log_dir) {
+            Ok(entries) => entries,
+            Err(_) => return Ok(Vec::new()),
+        };
+        let mut files: Vec<(String, PathBuf)> = entries
+            .filter_map(|entry| entry.ok())
+            .filter_map(|entry| {
+                let file = entry.file_name().to_string_lossy().into_owned();
+                let service = file.strip_suffix(".log")?;
+                if name.is_some_and(|name| name != service) {
+                    return None;
+                }
+                Some((service.to_string(), entry.path()))
+            })
+            .collect();
+        files.sort_by(|a, b| a.0.cmp(&b.0));
+        Ok(files)
     }
+
+    /// Truncates the log files for the named services (or every service when
+    /// `names` is None), returning the services whose logs were cleared. The
+    /// files themselves are kept so future runs keep appending and the services
+    /// stay discoverable by `devbox logs`.
+    pub fn clear_logs(&self, names: Option<&[String]>) -> Result<Vec<String>, SupervisorError> {
+        let mut cleared = Vec::new();
+        for (service, path) in self.log_files(None)? {
+            if names.is_none_or(|names| names.contains(&service)) {
+                fs::OpenOptions::new()
+                    .write(true)
+                    .truncate(true)
+                    .open(&path)
+                    .map_err(|source| SupervisorError::Log {
+                        name: service.clone(),
+                        source,
+                    })?;
+                cleared.push(service);
+            }
+        }
+        Ok(cleared)
+    }
+}
+
+/// True when the recorded process is still a live child of the devbox process
+/// that spawned it. This guards against terminating a PID that has since been
+/// reused by an unrelated program.
+fn is_ours(process: &Process) -> bool {
+    process.parent_pid != 0 && pid_parent(process.pid) == Some(process.parent_pid)
 }
 
 /// Returns the last `lines` lines of a file as a string.
@@ -270,6 +339,27 @@ fn kill_pid(pid: u32) -> Result<(), io::Error> {
     Command::new("kill").arg(pid.to_string()).status().map(|_| ())
 }
 
+#[cfg(windows)]
+fn pid_parent(pid: u32) -> Option<u32> {
+    let script = format!(
+        "(Get-CimInstance Win32_Process -Filter ('ProcessId = {pid}')).ParentProcessId"
+    );
+    let out = Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+        .output()
+        .ok()?;
+    String::from_utf8_lossy(&out.stdout).trim().parse().ok()
+}
+
+#[cfg(unix)]
+fn pid_parent(pid: u32) -> Option<u32> {
+    let out = Command::new("ps")
+        .args(["-o", "ppid=", "-p", &pid.to_string()])
+        .output()
+        .ok()?;
+    String::from_utf8_lossy(&out.stdout).trim().parse().ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -293,7 +383,9 @@ mod tests {
                     command: "cmd".into(),
                     args: vec!["/C".into(), "ping -n 60 127.0.0.1 > nul".into()],
                     cwd: None,
+                    env_file: None,
                     environment: BTreeMap::new(),
+                    enabled: true,
                 },
             )
         } else {
@@ -303,7 +395,9 @@ mod tests {
                     command: "sleep".into(),
                     args: vec!["60".into()],
                     cwd: None,
+                    env_file: None,
                     environment: BTreeMap::new(),
+                    enabled: true,
                 },
             )
         }
@@ -317,7 +411,9 @@ mod tests {
                     command: "cmd".into(),
                     args: vec!["/C".into(), "echo hello".into()],
                     cwd: None,
+                    env_file: None,
                     environment: BTreeMap::new(),
+                    enabled: true,
                 },
             )
         } else {
@@ -327,7 +423,9 @@ mod tests {
                     command: "sh".into(),
                     args: vec!["-c".into(), "echo hello".into()],
                     cwd: None,
+                    env_file: None,
                     environment: BTreeMap::new(),
+                    enabled: true,
                 },
             )
         }
@@ -388,6 +486,25 @@ mod tests {
     }
 
     #[test]
+    fn stop_skips_pids_that_are_not_children() {
+        let base = temp_dir();
+        let sup = Supervisor::new(base.join("state.toml"), base.join("logs"), &base);
+        let foreign = Process {
+            name: "foreign".into(),
+            pid: std::process::id(),
+            parent_pid: u32::MAX,
+            log_file: base.join("logs").join("foreign.log"),
+        };
+        sup.state.save(std::slice::from_ref(&foreign)).expect("save state");
+
+        let killed = sup.stop(None).expect("stop");
+        assert!(killed.is_empty());
+        assert!(sup.status().expect("status").is_empty());
+
+        fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
     fn stop_missing_names_returns_empty() {
         let base = temp_dir();
         let sup = Supervisor::new(base.join("state.toml"), base.join("logs"), &base);
@@ -407,6 +524,173 @@ mod tests {
         fs::write(&path, "a\nb\nc\nd\ne\n").expect("write log");
         assert_eq!(tail_file(&path, 2).expect("tail"), "d\ne");
         assert_eq!(tail_file(&path, 10).expect("tail"), "a\nb\nc\nd\ne");
+        fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn log_files_work_after_stop() {
+        let base = temp_dir();
+        let sup = Supervisor::new(base.join("state.toml"), base.join("logs"), &base);
+        let env = Environment::from_current();
+        sup.spawn_all(&BTreeMap::from([quick_service()]), &env)
+            .expect("spawn");
+        sup.stop(None).expect("stop");
+
+        let files = sup.log_files(None).expect("log files");
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].0, "echoer");
+        assert!(files[0].1.is_file());
+
+        fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn log_files_scan_disk_and_filter_by_name() {
+        let base = temp_dir();
+        let sup = Supervisor::new(base.join("state.toml"), base.join("logs"), &base);
+        fs::create_dir_all(&sup.log_dir).expect("create logs dir");
+        fs::write(sup.log_dir.join("api.log"), "hello\n").expect("write log");
+        fs::write(sup.log_dir.join("redis.log"), "world\n").expect("write log");
+
+        let files = sup.log_files(None).expect("log files");
+        assert_eq!(
+            files,
+            vec![
+                ("api".to_string(), sup.log_dir.join("api.log")),
+                ("redis".to_string(), sup.log_dir.join("redis.log")),
+            ]
+        );
+        let only_api = sup.log_files(Some("api")).expect("log files");
+        assert_eq!(only_api.len(), 1);
+        assert_eq!(only_api[0].0, "api");
+        assert!(sup.log_files(Some("nope")).expect("log files").is_empty());
+
+        fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn clear_logs_truncates_all_when_no_names() {
+        let base = temp_dir();
+        let sup = Supervisor::new(base.join("state.toml"), base.join("logs"), &base);
+        fs::create_dir_all(&sup.log_dir).expect("create logs dir");
+        fs::write(sup.log_dir.join("api.log"), "old\ncontent\n").expect("write log");
+        fs::write(sup.log_dir.join("redis.log"), "more\n").expect("write log");
+
+        let cleared = sup.clear_logs(None).expect("clear logs");
+        assert_eq!(cleared.len(), 2);
+        assert_eq!(
+            fs::read_to_string(sup.log_dir.join("api.log")).expect("read").len(),
+            0
+        );
+        assert_eq!(
+            fs::read_to_string(sup.log_dir.join("redis.log")).expect("read").len(),
+            0
+        );
+
+        fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn clear_logs_filters_by_name() {
+        let base = temp_dir();
+        let sup = Supervisor::new(base.join("state.toml"), base.join("logs"), &base);
+        fs::create_dir_all(&sup.log_dir).expect("create logs dir");
+        fs::write(sup.log_dir.join("api.log"), "old\n").expect("write log");
+        fs::write(sup.log_dir.join("redis.log"), "keep\n").expect("write log");
+
+        let cleared = sup.clear_logs(Some(&["api".into()])).expect("clear logs");
+        assert_eq!(cleared, vec!["api"]);
+        assert_eq!(
+            fs::read_to_string(sup.log_dir.join("api.log")).expect("read").len(),
+            0
+        );
+        assert_eq!(
+            fs::read_to_string(sup.log_dir.join("redis.log")).expect("read"),
+            "keep\n"
+        );
+
+        fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn clear_logs_missing_dir_is_noop() {
+        let base = temp_dir();
+        let sup = Supervisor::new(base.join("state.toml"), base.join("logs"), &base);
+        assert!(sup.clear_logs(None).expect("clear logs").is_empty());
+        fs::remove_dir_all(&base).ok();
+    }
+
+    fn env_dump_service(env_file: Option<PathBuf>) -> (String, Service) {
+        if cfg!(windows) {
+            (
+                "envdumper".into(),
+                Service {
+                    command: "cmd".into(),
+                    args: vec!["/C".into(), "set".into()],
+                    cwd: None,
+                    env_file,
+                    environment: BTreeMap::new(),
+                    enabled: true,
+                },
+            )
+        } else {
+            (
+                "envdumper".into(),
+                Service {
+                    command: "sh".into(),
+                    args: vec!["-c".into(), "env".into()],
+                    cwd: None,
+                    env_file,
+                    environment: BTreeMap::new(),
+                    enabled: true,
+                },
+            )
+        }
+    }
+
+    #[test]
+    fn env_file_values_injected_and_inline_wins() {
+        let base = temp_dir();
+        fs::write(
+            base.join("svc.env.toml"),
+            "[environment]\nDEVBOX_FROM_FILE = \"file\"\nDEVBOX_SHARED = \"file\"\n",
+        )
+        .expect("write env file");
+
+        let (name, mut service) = env_dump_service(Some(PathBuf::from("svc.env.toml")));
+        service
+            .environment
+            .insert("DEVBOX_SHARED".into(), "inline".into());
+        let services = BTreeMap::from([(name.clone(), service)]);
+
+        let sup = Supervisor::new(base.join("state.toml"), base.join("logs"), &base);
+        let env = Environment::from_current();
+        let mut spawned = sup.spawn_all(&services, &env).expect("spawn");
+        sup.monitor(&mut spawned).expect("monitor");
+
+        let log = fs::read_to_string(sup.log_dir.join("envdumper.log")).expect("read log");
+        assert!(log.contains("DEVBOX_FROM_FILE=file"));
+        assert!(log.contains("DEVBOX_SHARED=inline"));
+        assert!(!log.contains("DEVBOX_SHARED=file"));
+
+        fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn missing_env_file_fails_spawn() {
+        let base = temp_dir();
+        let (name, service) = env_dump_service(Some(PathBuf::from("missing.env.toml")));
+
+        let sup = Supervisor::new(base.join("state.toml"), base.join("logs"), &base);
+        let env = Environment::from_current();
+        let err = sup
+            .spawn_all(&BTreeMap::from([(name, service)]), &env)
+            .expect_err("missing env file fails spawn");
+        match err {
+            SupervisorError::EnvFile { .. } => {}
+            other => panic!("expected EnvFile error, got {other:?}"),
+        }
+
         fs::remove_dir_all(&base).ok();
     }
 }
