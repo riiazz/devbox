@@ -56,6 +56,7 @@ key is the service name; its value describes how to run it:
 | `cwd`         | Working directory (relative to the workspace) |
 | `env_file`    | External TOML file with an `[environment]` table (relative to the workspace) |
 | `environment` | Extra environment variables for this service  |
+| `enabled`     | Whether `devbox up` starts this service (default `true`) |
 
 `command` is the executable to launch, resolved like any program name: against
 `PATH`, which includes the executable directories of installed tools. `cwd`
@@ -71,8 +72,10 @@ args = ["run"]
 ```
 
 Services run inside the isolated DevBox environment with their output
-appended to `.devbox/workspace/logs/<name>.log`. See [cli.md](cli.md) for
-`devbox up`, `status`, `logs`, and `stop`.
+appended to `.devbox/workspace/logs/<name>.log`. Set `enabled = false` to keep
+a service defined without having `devbox up` start it — toggle it with
+`devbox services disable <name>` and `devbox services enable <name>`. See
+[cli.md](cli.md) for `devbox up`, `status`, `logs`, `clear-logs`, and `stop`.
 
 ### `env_file` (external environment)
 

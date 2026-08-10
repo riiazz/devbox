@@ -4,7 +4,7 @@ DevBox is a reproducible development environment tool written in Rust.
 
 ## Status
 
-Version 1.0.0 — stable.
+Version 1.1.0 — stable.
 
 - CLI parser
 - Runtime
@@ -17,12 +17,15 @@ Version 1.0.0 — stable.
 - Tool Resolution (`devbox exec rg` finds `.devbox/tools`, isolated PATH)
 - Shell (`devbox shell`, interactive PowerShell/bash inside the environment)
 - Environment Isolation (`HOME`, `TMP`, `NUGET_PACKAGES`, `DOTNET_ROOT` point into `.devbox`)
-- Process Supervisor (`devbox up`, `status`, `logs`, `stop` for `[services]`)
+- Process Supervisor (`devbox up`, `status`, `logs`, `clear-logs`, `stop` for `[services]`)
 - Live `devbox up` dashboard (status, CPU, memory, ports, logs; Ctrl+C stops services)
-- `devbox install` resolves tools through the `[tools]` config section
+- Service management (`devbox services add/enable/disable/list`, `devbox config`)
+- External environment files (`env_file` for services)
+- Safe `devbox stop` (only verified child PIDs are terminated)
+- `devbox install` resolves tools through the `[tools]` config section, with custom GitHub asset templates
 - Idempotent `devbox init`
 
-See [release/v1.0.0.md](release/v1.0.0.md) and [CHANGELOG.md](../CHANGELOG.md).
+See [release/v1.1.0.md](release/v1.1.0.md) and [CHANGELOG.md](../CHANGELOG.md).
 
 ## Documents
 

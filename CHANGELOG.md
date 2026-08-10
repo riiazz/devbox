@@ -3,14 +3,26 @@
 All notable changes to DevBox are documented in this file. DevBox follows
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [1.1.0] - 2026-08-05
 
 ### Added
 
-- **`devbox services list`** — lists every service registered in
-  `devbox.toml` with its command, enabled state, arguments, and `env_file`.
+- **`devbox services add <name> <command> [args...]`** — appends a new service
+  to `devbox.toml`. With `--env-file`, DevBox also generates an empty external
+  environment file at `.devbox/workspace/configs/<name>_config.toml` and
+  points the service's `env_file` at it.
+- **`devbox services enable <name>` / `devbox services disable <name>`** —
+  toggles whether `devbox up` starts a service, writing `enabled = false` to
+  `devbox.toml` when disabled.
+- **`devbox services list`** — lists every service registered in `devbox.toml`
+  with its command, enabled state, arguments, and `env_file`.
 - **`devbox config <name>`** — prints a service's configuration from
   `devbox.toml` and, when present, its workspace `env_file`.
+- **`devbox clear-logs [name...]`** — truncates the log files written by
+  `devbox up`, keeping the files so future runs keep appending.
+- **External environment configuration** — a service can load its environment
+  from a separate TOML file via `env_file`, with inline
+  `[services.<name>.environment]` values taking precedence.
 - **Live `devbox up` dashboard** — `devbox up` now redraws a dashboard every
   second showing each service's status, PID, parent PID, current CPU usage,
   memory, listening ports, and live logs. Logs default to the first five
@@ -26,6 +38,20 @@ All notable changes to DevBox are documented in this file. DevBox follows
   only terminates PIDs still verified to be children of the devbox process
   that spawned them. A PID reused by another program is left alone and pruned
   from the state file, which now records each process's parent PID.
+- **GitHub download resolution** — `devbox install` now supports custom asset
+  templates with `{name}`, `{version}`, `{version_v}`, `{os}`, `{arch}`,
+  `{triple}`, and `{ext}` placeholders for projects that don't publish
+  archives in DevBox's default `<name>-<version>-<triple>.<ext>` naming scheme.
+
+### Fixed
+
+- **Bouncing shell prompt** — `devbox exec` and `devbox shell` no longer
+  orphan a child shell when Ctrl+C is pressed (the "bouncing prompt" bug).
+- **Logs unavailable** — `devbox logs` reads the log files directly from the
+  workspace, so logs are available even when the supervisor state is stale.
+- **Port listing** — the dashboard now lists ports opened by descendant
+  processes, not just direct children.
+- **Dashboard log panel** — the dashboard no longer redraws a blank log panel.
 
 ## [1.0.0] - 2026-08-02
 
@@ -114,4 +140,5 @@ The journey from 0.1 to 1.0:
 
 - CLI parser, runtime, environment builder, process spawning.
 
+[1.1.0]: https://github.com/devbox/devbox/releases/tag/v1.1.0
 [1.0.0]: https://github.com/devbox/devbox/releases/tag/v1.0.0
