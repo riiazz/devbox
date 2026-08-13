@@ -1,8 +1,7 @@
-use config::ToolConfig;
+use config::{ArchiveFormat, PlatformConfig, ToolConfig};
 use thiserror::Error;
 
 use crate::checksum::Checksum;
-use crate::extract::ArchiveFormat;
 use crate::target::Target;
 
 /// A description of where to fetch a tool archive from.
@@ -29,6 +28,10 @@ pub struct ToolSpec {
     /// Asset filename template; falls back to `{name}-{version}-{triple}.{ext}`
     /// when `None`.
     pub asset: Option<String>,
+    /// Archive packaging override; falls back to the OS convention when `None`.
+    pub format: Option<ArchiveFormat>,
+    /// Display-name overrides for the `{os}` and `{arch}` placeholders.
+    pub platform: PlatformConfig,
     pub github: GitHubRepo,
 }
 
@@ -39,6 +42,8 @@ impl From<(String, ToolConfig)> for ToolSpec {
             default_version: tool.default_version,
             executable: tool.executable,
             asset: tool.asset,
+            format: tool.format,
+            platform: tool.platform,
             github: GitHubRepo {
                 owner: tool.github.owner,
                 repo: tool.github.repo,
@@ -85,6 +90,8 @@ fn builtin_specs() -> Vec<ToolSpec> {
         default_version: "14.1.0".into(),
         executable: "rg".into(),
         asset: None,
+        format: None,
+        platform: PlatformConfig::default(),
         github: GitHubRepo {
             owner: "BurntSushi".into(),
             repo: "ripgrep".into(),
@@ -113,7 +120,9 @@ pub fn resolve_source(
         tool: spec.name.clone(),
         target: format!("{}-{}", target.os, target.arch),
     })?;
-    let format = target.archive_format();
+    let os_name = spec.platform.os.get(goos).map(String::as_str).unwrap_or(goos);
+    let arch_name = spec.platform.arch.get(goarch).map(String::as_str).unwrap_or(goarch);
+    let format = spec.format.unwrap_or_else(|| target.archive_format());
     let ext = match format {
         ArchiveFormat::Zip => "zip",
         ArchiveFormat::TarGz => "tar.gz",
@@ -127,8 +136,8 @@ pub fn resolve_source(
             // `{version_v}` keeps the exact release tag.
             ("version", version_without_v(version)),
             ("version_v", version),
-            ("os", goos),
-            ("arch", goarch),
+            ("os", os_name),
+            ("arch", arch_name),
             ("triple", triple),
             ("ext", ext),
         ],
@@ -172,6 +181,7 @@ pub enum ResolveError {
 mod tests {
     use super::*;
     use config::GithubSource;
+    use std::collections::BTreeMap;
 
     fn manifest() -> Manifest {
         Manifest::builtin()
@@ -199,6 +209,8 @@ mod tests {
             default_version: "2.45.0".into(),
             executable: "git".into(),
             asset: None,
+            format: None,
+            platform: PlatformConfig::default(),
             github: GitHubRepo {
                 owner: "git-for-windows".into(),
                 repo: "git".into(),
@@ -218,6 +230,8 @@ mod tests {
             default_version: "99.0.0".into(),
             executable: "rg".into(),
             asset: None,
+            format: None,
+            platform: PlatformConfig::default(),
             github: GitHubRepo {
                 owner: "fork".into(),
                 repo: "ripgrep".into(),
@@ -235,6 +249,8 @@ mod tests {
             default_version: "2.45.0".into(),
             executable: "git".into(),
             asset: Some("git-{version}-{triple}.{ext}".into()),
+            format: None,
+            platform: PlatformConfig::default(),
             github: GithubSource {
                 owner: "git-for-windows".into(),
                 repo: "git".into(),
@@ -291,6 +307,8 @@ mod tests {
             default_version: "v2.11.3".into(),
             executable: "caddy".into(),
             asset: Some("caddy_{version}_{os}_{arch}.{ext}".into()),
+            format: None,
+            platform: PlatformConfig::default(),
             github: GitHubRepo {
                 owner: "caddyserver".into(),
                 repo: "caddy".into(),
@@ -316,6 +334,8 @@ mod tests {
             default_version: "v3.16.0".into(),
             executable: "helm".into(),
             asset: Some("helm-{version_v}-{os}-{arch}.{ext}".into()),
+            format: None,
+            platform: PlatformConfig::default(),
             github: GitHubRepo {
                 owner: "helm".into(),
                 repo: "helm".into(),
@@ -334,6 +354,69 @@ mod tests {
     }
 
     #[test]
+    fn platform_overrides_and_format_render_custom_naming() {
+        let mut manifest = manifest();
+        manifest.add(ToolSpec {
+            name: "mockery".into(),
+            default_version: "v3.7.3".into(),
+            executable: "mockery".into(),
+            asset: Some("mockery_{version}_{os}_{arch}.{ext}".into()),
+            format: Some(crate::extract::ArchiveFormat::TarGz),
+            platform: PlatformConfig {
+                os: BTreeMap::from([
+                    ("windows".into(), "Windows".into()),
+                    ("linux".into(), "Linux".into()),
+                    ("darwin".into(), "Darwin".into()),
+                ]),
+                arch: BTreeMap::from([("amd64".into(), "x86_64".into())]),
+            },
+            github: GitHubRepo {
+                owner: "vektra".into(),
+                repo: "mockery".into(),
+            },
+        });
+
+        let spec = manifest.resolve("mockery").unwrap();
+        let source = resolve_source(spec, "v3.7.3", &Target { os: "windows", arch: "x86_64" })
+            .expect("resolve");
+        assert_eq!(source.format, crate::extract::ArchiveFormat::TarGz);
+        assert_eq!(
+            source.url,
+            "https://github.com/vektra/mockery/releases/download/v3.7.3/\
+             mockery_3.7.3_Windows_x86_64.tar.gz"
+        );
+    }
+
+    #[test]
+    fn unlisted_platform_values_fall_back_to_go_names() {
+        let mut manifest = manifest();
+        manifest.add(ToolSpec {
+            name: "caddy".into(),
+            default_version: "2.11.3".into(),
+            executable: "caddy".into(),
+            asset: Some("caddy_{version}_{os}_{arch}.{ext}".into()),
+            format: None,
+            platform: PlatformConfig {
+                os: BTreeMap::from([("windows".into(), "win".into())]),
+                arch: BTreeMap::new(),
+            },
+            github: GitHubRepo {
+                owner: "caddyserver".into(),
+                repo: "caddy".into(),
+            },
+        });
+
+        let spec = manifest.resolve("caddy").unwrap();
+        let source = resolve_source(spec, "2.11.3", &Target { os: "linux", arch: "aarch64" })
+            .expect("resolve");
+        assert_eq!(
+            source.url,
+            "https://github.com/caddyserver/caddy/releases/download/2.11.3/\
+             caddy_2.11.3_linux_arm64.tar.gz"
+        );
+    }
+
+    #[test]
     fn default_asset_template_uses_rust_triple() {
         let mut manifest = manifest();
         manifest.add(ToolSpec {
@@ -341,6 +424,8 @@ mod tests {
             default_version: "2.11.3".into(),
             executable: "caddy".into(),
             asset: None,
+            format: None,
+            platform: PlatformConfig::default(),
             github: GitHubRepo {
                 owner: "caddyserver".into(),
                 repo: "caddy".into(),

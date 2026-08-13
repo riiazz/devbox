@@ -6,11 +6,7 @@ use flate2::read::GzDecoder;
 use thiserror::Error;
 use zip::ZipArchive;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ArchiveFormat {
-    Zip,
-    TarGz,
-}
+pub use config::ArchiveFormat;
 
 #[derive(Debug, Error)]
 pub enum ExtractError {

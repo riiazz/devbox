@@ -122,6 +122,9 @@ describes its GitHub release assets:
 | `default_version` | Version used when `--version` is omitted           |
 | `executable`      | Executable name inside the archive, e.g. `git`     |
 | `asset`           | Asset filename template (default `{name}-{version}-{triple}.{ext}`) |
+| `format`          | Archive packaging: `"zip"` or `"tar.gz"` (default: zip on Windows, tar.gz elsewhere) |
+| `platform.os`     | Display-name overrides for `{os}`, keyed by GOOS   |
+| `platform.arch`   | Display-name overrides for `{arch}`, keyed by GOARCH |
 | `github.owner`    | GitHub owner of the repository, e.g. `git-for-windows` |
 | `github.repo`     | GitHub repository name, e.g. `git`                 |
 
@@ -150,6 +153,32 @@ asset = "caddy_{version}_{os}_{arch}.{ext}"
 owner = "caddyserver"
 repo = "caddy"
 ```
+
+Some projects spell the OS or architecture differently (e.g. mockery ships
+`mockery_3.7.3_Windows_x86_64.tar.gz`). The `platform.os` and `platform.arch`
+tables remap the standard GOOS/GOARCH names to whatever the release archives
+use; unlisted names keep the default spelling. Use `format = "tar.gz"` when a
+project ships tar archives even on Windows:
+
+```toml
+[tools.mockery]
+default_version = "v3.7.3"
+executable = "mockery"
+asset = "mockery_{version}_{os}_{arch}.{ext}"
+format = "tar.gz"
+
+[tools.mockery.platform]
+os = { windows = "Windows", linux = "Linux", darwin = "Darwin" }
+arch = { amd64 = "x86_64" }
+
+[tools.mockery.github]
+owner = "vektra"
+repo = "mockery"
+```
+
+This resolves to
+`https://github.com/vektra/mockery/releases/download/v3.7.3/mockery_3.7.3_Windows_x86_64.tar.gz`.
+`{ext}` follows `format` (here `tar.gz`) on every OS.
 
 A `[tools]` entry overrides the built-in spec of the same name. See
 [downloader.md](downloader.md).

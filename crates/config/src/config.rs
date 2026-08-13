@@ -88,6 +88,28 @@ fn is_enabled(enabled: &bool) -> bool {
     *enabled
 }
 
+/// How a tool's GitHub release archives are packaged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ArchiveFormat {
+    #[serde(rename = "zip")]
+    Zip,
+    #[serde(rename = "tar.gz")]
+    TarGz,
+}
+
+/// Display-name overrides for the `{os}` and `{arch}` asset placeholders.
+///
+/// Keys are the standard GOOS/GOARCH names (`windows`, `amd64`, ...); values
+/// are the strings that appear in the release archives. Unlisted keys fall
+/// back to the GOOS/GOARCH spelling.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlatformConfig {
+    #[serde(default)]
+    pub os: BTreeMap<String, String>,
+    #[serde(default)]
+    pub arch: BTreeMap<String, String>,
+}
+
 /// A user-defined tool resolvable by `devbox install` (version 0.10).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ToolConfig {
@@ -98,6 +120,13 @@ pub struct ToolConfig {
     /// `{ext}`. Defaults to `{name}-{version}-{triple}.{ext}`.
     #[serde(default)]
     pub asset: Option<String>,
+    /// Archive packaging override: `"zip"` or `"tar.gz"`. Defaults to the
+    /// current OS convention (zip on Windows, tar.gz elsewhere).
+    #[serde(default)]
+    pub format: Option<ArchiveFormat>,
+    /// Display-name overrides for `{os}` and `{arch}`; see `PlatformConfig`.
+    #[serde(default)]
+    pub platform: PlatformConfig,
     #[serde(default)]
     pub github: GithubSource,
 }
@@ -405,6 +434,40 @@ repo = "ripgrep"
     }
 
     #[test]
+    fn parses_tool_platform_overrides_and_format() {
+        let path = temp_file("platform-tools.toml");
+        fs::write(
+            &path,
+            r#"
+[tools.mockery]
+default_version = "v3.7.3"
+executable = "mockery"
+asset = "mockery_{version}_{os}_{arch}.{ext}"
+format = "tar.gz"
+
+[tools.mockery.platform]
+os = { windows = "Windows", linux = "Linux", darwin = "Darwin" }
+arch = { amd64 = "x86_64" }
+
+[tools.mockery.github]
+owner = "vektra"
+repo = "mockery"
+"#,
+        )
+        .expect("write config");
+
+        let config = Config::load(&path).expect("load config");
+        let mockery = config.tools.get("mockery").expect("mockery tool");
+        assert_eq!(mockery.format, Some(ArchiveFormat::TarGz));
+        assert_eq!(mockery.platform.os["windows"], "Windows");
+        assert_eq!(mockery.platform.os["linux"], "Linux");
+        assert_eq!(mockery.platform.arch["amd64"], "x86_64");
+        assert!(!mockery.platform.arch.contains_key("arm64"));
+
+        fs::remove_file(&path).ok();
+    }
+
+    #[test]
     fn missing_tools_defaults_to_empty() {
         let path = temp_file("notools.toml");
         fs::write(&path, "[workspace]\nname = \"x\"\n").expect("write config");
@@ -428,6 +491,8 @@ repo = "ripgrep"
                     default_version: "2.45.0".into(),
                     executable: "git".into(),
                     asset: None,
+                    format: None,
+                    platform: PlatformConfig::default(),
                     github: GithubSource {
                         owner: "git-for-windows".into(),
                         repo: "git".into(),
